@@ -12,18 +12,24 @@ interface AnniversariesPageProps {
 export function AnniversariesPage({ data, session, onChange }: AnniversariesPageProps) {
   const [title, setTitle] = useState('')
   const [date, setDate] = useState(formatDate())
+  const [saving, setSaving] = useState(false)
 
   const anniversaries = [...data.anniversaries]
     .sort((a, b) => a.date.localeCompare(b.date))
     .map(anniversaryInfo)
 
-  function submit() {
+  async function submit() {
     const trimmedTitle = title.trim()
     if (!trimmedTitle) return
 
-    onChange(addAnniversary(data, trimmedTitle, date, session))
-    setTitle('')
-    setDate(formatDate())
+    try {
+      setSaving(true)
+      onChange(await addAnniversary(data, trimmedTitle, date, session))
+      setTitle('')
+      setDate(formatDate())
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -42,7 +48,9 @@ export function AnniversariesPage({ data, session, onChange }: AnniversariesPage
           value={date}
           onChange={(event) => setDate(event.target.value)}
         />
-        <button className="primary-btn" onClick={submit}>保存纪念日</button>
+        <button className="primary-btn" disabled={saving} onClick={submit}>
+          {saving ? '保存中...' : '保存纪念日'}
+        </button>
       </section>
 
       <section className="card">

@@ -32,6 +32,7 @@ export function CouponsPage({ data, session, onChange }: CouponsPageProps) {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [expireDate, setExpireDate] = useState('')
+  const [saving, setSaving] = useState(false)
   const receivers = data.users.filter((user) => user.openid !== session.openid)
   const [receiverOpenid, setReceiverOpenid] = useState(receivers[0]?.openid || '')
 
@@ -45,21 +46,26 @@ export function CouponsPage({ data, session, onChange }: CouponsPageProps) {
       : normalized.filter((coupon) => coupon.status === activeStatus)
   }, [activeStatus, data.coupons])
 
-  function createCoupon() {
+  async function createCoupon() {
     const trimmedTitle = title.trim()
     const receiver = receivers.find((item) => item.openid === receiverOpenid)
     if (!trimmedTitle || !receiver) return
 
-    onChange(addCoupon(data, {
-      title: trimmedTitle,
-      description: description.trim(),
-      expireDate,
-      receiverOpenid: receiver.openid,
-      receiverName: receiver.displayName
-    }, session))
-    setTitle('')
-    setDescription('')
-    setExpireDate('')
+    try {
+      setSaving(true)
+      onChange(await addCoupon(data, {
+        title: trimmedTitle,
+        description: description.trim(),
+        expireDate,
+        receiverOpenid: receiver.openid,
+        receiverName: receiver.displayName
+      }, session))
+      setTitle('')
+      setDescription('')
+      setExpireDate('')
+    } finally {
+      setSaving(false)
+    }
   }
 
   function canRequestUse(coupon: Coupon) {
@@ -113,7 +119,9 @@ export function CouponsPage({ data, session, onChange }: CouponsPageProps) {
           value={expireDate}
           onChange={(event) => setExpireDate(event.target.value)}
         />
-        <button className="primary-btn" onClick={createCoupon}>发送给对方</button>
+        <button className="primary-btn" disabled={saving} onClick={createCoupon}>
+          {saving ? '发送中...' : '发送给对方'}
+        </button>
       </section>
 
       <section className="card">
@@ -146,7 +154,7 @@ export function CouponsPage({ data, session, onChange }: CouponsPageProps) {
                 {canRequestUse(coupon) && (
                   <button
                     className="ghost-btn"
-                    onClick={() => onChange(updateCouponStatus(data, coupon.id, 'pending', session))}
+                    onClick={async () => onChange(await updateCouponStatus(data, coupon.id, 'pending', session))}
                   >
                     申请使用
                   </button>
@@ -155,13 +163,13 @@ export function CouponsPage({ data, session, onChange }: CouponsPageProps) {
                   <>
                     <button
                       className="ghost-btn"
-                      onClick={() => onChange(updateCouponStatus(data, coupon.id, 'unused', session))}
+                      onClick={async () => onChange(await updateCouponStatus(data, coupon.id, 'unused', session))}
                     >
                       暂不确认
                     </button>
                     <button
                       className="primary-btn small"
-                      onClick={() => onChange(updateCouponStatus(data, coupon.id, 'used', session))}
+                      onClick={async () => onChange(await updateCouponStatus(data, coupon.id, 'used', session))}
                     >
                       确认使用
                     </button>

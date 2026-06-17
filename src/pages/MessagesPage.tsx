@@ -17,6 +17,7 @@ function readText(message: Message) {
 
 export function MessagesPage({ data, session, onChange }: MessagesPageProps) {
   const [content, setContent] = useState('')
+  const [sending, setSending] = useState(false)
 
   const messages = useMemo(
     () => [...data.messages].sort((a, b) => {
@@ -27,18 +28,24 @@ export function MessagesPage({ data, session, onChange }: MessagesPageProps) {
   )
 
   useEffect(() => {
-    const nextData = markMessagesRead(data, session)
-    if (JSON.stringify(nextData.messages) !== JSON.stringify(data.messages)) {
-      onChange(nextData)
-    }
+    markMessagesRead(data, session).then((nextData) => {
+      if (JSON.stringify(nextData.messages) !== JSON.stringify(data.messages)) {
+        onChange(nextData)
+      }
+    })
   }, [data, onChange, session])
 
-  function submit() {
+  async function submit() {
     const trimmedContent = content.trim()
     if (!trimmedContent) return
 
-    onChange(addMessage(data, trimmedContent, session))
-    setContent('')
+    try {
+      setSending(true)
+      onChange(await addMessage(data, trimmedContent, session))
+      setContent('')
+    } finally {
+      setSending(false)
+    }
   }
 
   return (
@@ -52,7 +59,9 @@ export function MessagesPage({ data, session, onChange }: MessagesPageProps) {
           maxLength={200}
           onChange={(event) => setContent(event.target.value)}
         />
-        <button className="primary-btn" onClick={submit}>发送留言</button>
+        <button className="primary-btn" disabled={sending} onClick={submit}>
+          {sending ? '发送中...' : '发送留言'}
+        </button>
       </section>
 
       <section className="card">
@@ -68,7 +77,7 @@ export function MessagesPage({ data, session, onChange }: MessagesPageProps) {
               <div className="message-foot">
                 <small>{formatTime(message.createdAt)}</small>
                 {!message.pinned && (
-                  <button className="text-btn" onClick={() => onChange(pinMessage(data, message.id))}>
+                  <button className="text-btn" onClick={async () => onChange(await pinMessage(data, message.id))}>
                     置顶
                   </button>
                 )}

@@ -3,15 +3,16 @@ import { APP_NAME, ROLE_OPTIONS } from '../config'
 import type { RoleKey } from '../types'
 
 interface LoginPageProps {
-  onLogin: (roleKey: RoleKey) => void
+  onLogin: (roleKey: RoleKey, inviteCode: string) => Promise<void>
 }
 
 export function LoginPage({ onLogin }: LoginPageProps) {
   const [selectedRole, setSelectedRole] = useState<RoleKey | ''>('')
   const [inviteCode, setInviteCode] = useState('')
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
 
-  function submit() {
+  async function submit() {
     const role = ROLE_OPTIONS.find((item) => item.key === selectedRole)
     if (!role) {
       setError('请选择身份')
@@ -23,8 +24,15 @@ export function LoginPage({ onLogin }: LoginPageProps) {
       return
     }
 
-    setError('')
-    onLogin(role.key)
+    try {
+      setLoading(true)
+      setError('')
+      await onLogin(role.key, inviteCode)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '登录失败')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -53,7 +61,9 @@ export function LoginPage({ onLogin }: LoginPageProps) {
           onChange={(event) => setInviteCode(event.target.value)}
         />
         {error && <p className="form-error">{error}</p>}
-        <button className="primary-btn" onClick={submit}>进入专属空间</button>
+        <button className="primary-btn" disabled={loading} onClick={submit}>
+          {loading ? '正在进入...' : '进入专属空间'}
+        </button>
       </section>
     </main>
   )

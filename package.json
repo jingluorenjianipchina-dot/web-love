@@ -3,8 +3,11 @@
   "version": "1.0.0",
   "description": "",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "client": "vite",
+    "server": "node server/index.mjs",
     "build": "tsc -b && vite build",
+    "start": "node server/index.mjs",
     "preview": "vite preview"
   },
   "keywords": [],
@@ -12,13 +15,19 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "sql.js": "^1.14.1"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
+    "concurrently": "^10.0.3",
     "typescript": "^6.0.3",
     "vite": "^8.0.16"
   }

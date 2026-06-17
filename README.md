@@ -1,6 +1,6 @@
 # 专属空间网页版
 
-这是从微信小程序迁移出的轻量网页版本。当前版本不依赖微信云开发，数据保存在浏览器本地，并支持导出/导入 JSON 备份。
+这是从微信小程序迁移出的网页版本。当前版本使用 React 前端、Node/Express 后端和 SQLite 数据库，不再依赖微信云开发。
 
 ## 功能
 
@@ -9,7 +9,7 @@
 - 纪念日新增与天数计算
 - 私密留言、置顶、已读标记
 - 卡券创建、申请使用、确认/拒绝
-- 本地数据导出、导入、清空
+- 服务器数据导出、导入、清空
 
 ## 本地运行
 
@@ -17,6 +17,11 @@
 npm install
 npm run dev
 ```
+
+启动后会同时运行：
+
+- 前端：`http://localhost:5173`
+- 后端：`http://localhost:3001`
 
 默认邀请码：
 
@@ -31,21 +36,63 @@ npm run build
 
 构建产物在 `dist` 目录。
 
-## 公网部署
+## 生产运行
 
-可以把 `web-love` 推送到 GitHub，然后用 Vercel 或 Netlify 导入这个目录。
+```bash
+npm run build
+npm run start
+```
 
-- 构建命令：`npm run build`
-- 输出目录：`dist`
+生产服务默认监听：
+
+```text
+http://localhost:3001
+```
+
+后端会同时提供 API 和前端页面。
 
 ## 数据说明
 
-当前数据保存在当前浏览器的 `localStorage`。不同设备打开同一个网址时，数据不会自动同步。
+数据保存在 SQLite 文件里：
 
-临时同步方式：
+```text
+server/data/love.sqlite
+```
 
-1. 在 A 设备的“设置”里导出 JSON 备份。
-2. 把 JSON 文件发给 B 设备。
-3. 在 B 设备的“设置”里导入 JSON 备份。
+这个文件不会提交到 GitHub。部署到服务器后，请注意备份这个文件。
 
-后续如果需要两个人实时共享数据，可以接入 Supabase，并复用当前页面，只替换数据服务层。
+## API
+
+- `POST /api/login`
+- `GET /api/data`
+- `POST /api/anniversaries`
+- `POST /api/messages`
+- `POST /api/messages/read`
+- `POST /api/messages/:id/pin`
+- `POST /api/coupons`
+- `POST /api/coupons/:id/status`
+- `GET /api/export`
+- `POST /api/import`
+- `POST /api/reset`
+
+## 阿里云部署方向
+
+推荐在阿里云服务器上安装 Node.js，然后运行：
+
+```bash
+npm install
+npm run build
+npm run start
+```
+
+再用 Nginx 反向代理到 `http://localhost:3001`。
+
+如果绑定国内域名，通常需要完成备案。没有域名时，也可以先用服务器公网 IP 加端口测试。
+
+## 备份
+
+网页“设置”里仍然支持导出 JSON 备份。服务器层面也建议定期备份：
+
+```text
+server/data/love.sqlite
+```

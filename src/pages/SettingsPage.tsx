@@ -28,7 +28,7 @@ export function SettingsPage({ data, onChange, onLogout }: SettingsPageProps) {
 
     try {
       const text = await file.text()
-      const nextData = importData(text)
+      const nextData = await importData(text)
       onChange(nextData)
       setMessage('导入成功')
     } catch (error) {
@@ -40,9 +40,9 @@ export function SettingsPage({ data, onChange, onLogout }: SettingsPageProps) {
     }
   }
 
-  function handleReset() {
+  async function handleReset() {
     if (!window.confirm('确定清空本地数据并恢复示例数据吗？')) return
-    onChange(resetData())
+    onChange(await resetData())
     setMessage('已恢复示例数据')
   }
 

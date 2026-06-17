@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { APP_NAME } from './config'
 import { AnniversariesPage } from './pages/AnniversariesPage'
 import { CouponsPage } from './pages/CouponsPage'
@@ -10,8 +10,7 @@ import {
   clearSession,
   getSession,
   loadData,
-  login,
-  saveData
+  login
 } from './services/storage'
 import type { AppData, PageKey, RoleKey, Session } from './types'
 
@@ -24,23 +23,37 @@ const tabs: Array<{ key: PageKey; label: string }> = [
 ]
 
 export default function App() {
-  const [data, setDataState] = useState<AppData>(() => loadData())
+  const [data, setDataState] = useState<AppData | null>(null)
   const [session, setSession] = useState<Session | null>(() => getSession())
   const [page, setPage] = useState<PageKey>('home')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
   const currentUser = useMemo(
-    () => data.users.find((user) => user.openid === session?.openid) || null,
-    [data.users, session]
+    () => data?.users.find((user) => user.openid === session?.openid) || null,
+    [data, session]
   )
 
+  useEffect(() => {
+    loadData()
+      .then((nextData) => {
+        setDataState(nextData)
+        setError('')
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : '数据加载失败')
+      })
+      .finally(() => setLoading(false))
+  }, [])
+
   function setData(nextData: AppData) {
-    saveData(nextData)
     setDataState(nextData)
   }
 
-  function handleLogin(roleKey: RoleKey) {
-    const nextSession = login(roleKey)
-    setSession(nextSession)
+  async function handleLogin(roleKey: RoleKey, inviteCode: string) {
+    const result = await login(roleKey, inviteCode)
+    setSession(result.session)
+    setDataState(result.data)
     setPage('home')
   }
 
@@ -49,7 +62,29 @@ export default function App() {
     setSession(null)
   }
 
-  if (!session || !currentUser) {
+  if (loading) {
+    return (
+      <main className="login-page">
+        <section className="login-card">
+          <p className="subtitle">正在连接服务器...</p>
+        </section>
+      </main>
+    )
+  }
+
+  if (error) {
+    return (
+      <main className="login-page">
+        <section className="login-card">
+          <h1>服务器连接失败</h1>
+          <p className="subtitle">{error}</p>
+          <p className="subtitle">请确认后端服务已经启动。</p>
+        </section>
+      </main>
+    )
+  }
+
+  if (!session || !currentUser || !data) {
     return <LoginPage onLogin={handleLogin} />
   }
 
