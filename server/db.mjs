@@ -284,6 +284,19 @@ export function login(roleKey, inviteCode) {
   }
 }
 
+export function updateUserProfile({ openid, nickName, avatarUrl }) {
+  const user = findUserByOpenid(openid)
+  if (!user) throw new Error('用户不存在')
+
+  run(
+    `UPDATE users
+      SET nick_name = ?, avatar_url = ?, updated_at = ?
+      WHERE openid = ?`,
+    [nickName || user.nickName, avatarUrl ?? user.avatarUrl, now(), openid]
+  )
+  return getData()
+}
+
 export function addAnniversary({ title, date, openid }) {
   const user = findUserByOpenid(openid)
   if (!user) throw new Error('身份不存在')
@@ -293,6 +306,22 @@ export function addAnniversary({ title, date, openid }) {
       id, title, date, type, creator_openid, creator_name, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [createId('anniversary'), title, date, title.includes('相识') ? 'meet' : 'custom', user.openid, user.displayName, now(), now()]
+  )
+  return getData()
+}
+
+export function updateAnniversary({ id, title, date, openid }) {
+  const user = findUserByOpenid(openid)
+  if (!user) throw new Error('身份不存在')
+
+  const existing = row('SELECT * FROM anniversaries WHERE id = ?', [id])
+  if (!existing) throw new Error('纪念日不存在')
+
+  run(
+    `UPDATE anniversaries
+      SET title = ?, date = ?, type = ?, updated_at = ?
+      WHERE id = ?`,
+    [title, date, title.includes('相识') ? 'meet' : 'custom', now(), id]
   )
   return getData()
 }
@@ -328,6 +357,21 @@ export function markMessagesRead(openid) {
 
 export function pinMessage(id) {
   run('UPDATE messages SET pinned = 1, updated_at = ? WHERE id = ?', [now(), id])
+  return getData()
+}
+
+export function setMessagePinned(id, pinned) {
+  run('UPDATE messages SET pinned = ?, updated_at = ? WHERE id = ?', [pinned ? 1 : 0, now(), id])
+  return getData()
+}
+
+export function updateMessage({ id, content }) {
+  run('UPDATE messages SET content = ?, updated_at = ? WHERE id = ?', [content, now(), id])
+  return getData()
+}
+
+export function deleteMessage(id) {
+  run('DELETE FROM messages WHERE id = ?', [id])
   return getData()
 }
 

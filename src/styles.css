@@ -186,6 +186,26 @@ h3 {
   resize: vertical;
 }
 
+.segmented-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.segmented-btn {
+  min-height: 48px;
+  border-radius: 18px;
+  color: #967f7f;
+  background: #fff7f8;
+}
+
+.segmented-btn.active {
+  color: #fff;
+  background: #e77c8e;
+  font-weight: 700;
+}
+
 .primary-btn,
 .ghost-btn {
   width: 100%;
@@ -328,6 +348,13 @@ h3 {
   gap: 14px;
 }
 
+.list-item-button {
+  width: 100%;
+  border: 0;
+  color: inherit;
+  text-align: left;
+}
+
 .item-metrics {
   display: grid;
   gap: 4px;
@@ -351,12 +378,28 @@ h3 {
   gap: 10px;
 }
 
-.message-head span {
+.message-tag {
   border-radius: 999px;
   padding: 4px 10px;
   color: #d9657d;
   background: #fff0f3;
   font-size: 12px;
+}
+
+.message-more-btn {
+  border-radius: 999px;
+  padding: 4px 10px;
+  color: #d9657d;
+  background: #fff0f3;
+  border: 0;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.message-tag-btn {
+  border: 0;
+  cursor: pointer;
+  font-size: 11px;
 }
 
 .template-list,
@@ -384,6 +427,34 @@ h3 {
   padding: 0 18px;
 }
 
+.dialog-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.dialog-card {
+  width: min(100%, 420px);
+  border-radius: 24px;
+  padding: 18px;
+  background: #fff;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.16);
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.dialog-actions.vertical {
+  display: grid;
+}
+
 .settings-actions {
   display: grid;
   gap: 10px;
@@ -405,6 +476,56 @@ h3 {
   padding: 12px;
   color: #806b6b;
   background: #fff7f8;
+}
+
+.profile-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.profile-avatar {
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  flex: 0 0 72px;
+  overflow: hidden;
+  border-radius: 50%;
+  color: #fff;
+  background: #e77c8e;
+  cursor: pointer;
+  font-size: 24px;
+  font-weight: 800;
+}
+
+.profile-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.profile-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: #4d3f3f;
+}
+
+.profile-name strong {
+  font-size: 18px;
+}
+
+.profile-edit-btn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: #d9657d;
+  background: #fff0f3;
+  font-size: 14px;
 }
 
 .empty {

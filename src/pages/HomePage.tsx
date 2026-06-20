@@ -13,6 +13,11 @@ function pickDailyQuote() {
   return DAILY_QUOTES[index]
 }
 
+function avatarText(user: User) {
+  const name = user.nickName || user.displayName
+  return name.slice(1, 2) || name.slice(0, 1) || '?'
+}
+
 export function HomePage({ data, currentUser }: HomePageProps) {
   const anniversaries = data.anniversaries.map(anniversaryInfo)
   const sortedByRemaining = [...anniversaries].sort((a, b) => a.remainingDays - b.remainingDays)
@@ -34,13 +39,12 @@ export function HomePage({ data, currentUser }: HomePageProps) {
       </section>
 
       <section className="card">
-        <h3>我们</h3>
+        <h3>我和你</h3>
         <div className="user-row">
           {data.users.map((user) => (
             <div className="avatar-card" key={user.id}>
-              <div className="avatar">{user.displayName.slice(0, 1)}</div>
+              <div className="avatar">{avatarText(user)}</div>
               <strong>{user.displayName}</strong>
-              <span>{user.openid === currentUser.openid ? '当前身份' : '对方'}</span>
             </div>
           ))}
         </div>

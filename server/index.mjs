@@ -6,6 +6,7 @@ import {
   addAnniversary,
   addCoupon,
   addMessage,
+  deleteMessage,
   getData,
   initDb,
   login,
@@ -13,7 +14,11 @@ import {
   pinMessage,
   replaceData,
   resetData,
-  updateCouponStatus
+  setMessagePinned,
+  updateMessage,
+  updateAnniversary,
+  updateCouponStatus,
+  updateUserProfile
 } from './db.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -23,7 +28,7 @@ const app = express()
 const port = Number(process.env.PORT || 3001)
 
 app.use(cors())
-app.use(express.json({ limit: '2mb' }))
+app.use(express.json({ limit: '6mb' }))
 
 function asyncRoute(handler) {
   return async (req, res, next) => {
@@ -59,6 +64,25 @@ app.get('/api/data', (_req, res) => {
   res.json(getData())
 })
 
+app.get('/api/server-date', (_req, res) => {
+  res.json({ date: new Date().toISOString().slice(0, 10) })
+})
+
+app.post('/api/users/:openid/profile', (req, res) => {
+  const nickName = String(req.body.nickName || '').trim()
+
+  if (!nickName) {
+    res.status(400).json({ message: '昵称不能为空' })
+    return
+  }
+
+  res.json(updateUserProfile({
+    openid: req.params.openid,
+    nickName,
+    avatarUrl: req.body.avatarUrl
+  }))
+})
+
 app.post('/api/anniversaries', (req, res) => {
   const title = String(req.body.title || '').trim()
   const date = String(req.body.date || '').trim()
@@ -69,6 +93,23 @@ app.post('/api/anniversaries', (req, res) => {
   }
 
   res.json(addAnniversary({ title, date, openid: req.body.openid }))
+})
+
+app.post('/api/anniversaries/:id', (req, res) => {
+  const title = String(req.body.title || '').trim()
+  const date = String(req.body.date || '').trim()
+
+  if (!title || !date) {
+    res.status(400).json({ message: '纪念日标题和日期不能为空' })
+    return
+  }
+
+  res.json(updateAnniversary({
+    id: req.params.id,
+    title,
+    date,
+    openid: req.body.openid
+  }))
 })
 
 app.post('/api/messages', (req, res) => {
@@ -87,7 +128,29 @@ app.post('/api/messages/read', (req, res) => {
 })
 
 app.post('/api/messages/:id/pin', (req, res) => {
+  const pinned = req.body?.pinned
+  if (typeof pinned === 'boolean') {
+    res.json(setMessagePinned(req.params.id, pinned))
+    return
+  }
   res.json(pinMessage(req.params.id))
+})
+
+app.post('/api/messages/:id/update', (req, res) => {
+  const content = String(req.body.content || '').trim()
+  if (!content) {
+    res.status(400).json({ message: '留言内容不能为空' })
+    return
+  }
+
+  res.json(updateMessage({
+    id: req.params.id,
+    content
+  }))
+})
+
+app.delete('/api/messages/:id', (req, res) => {
+  res.json(deleteMessage(req.params.id))
 })
 
 app.post('/api/coupons', (req, res) => {

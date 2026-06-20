@@ -1,33 +1,199 @@
-import { useState } from 'react'
-import { resetData } from '../services/storage'
-import type { AppData } from '../types'
+import { useEffect, useState } from 'react'
+import { resetData, updateUserProfile } from '../services/storage'
+import type { AppData, User } from '../types'
 
 interface SettingsPageProps {
   data: AppData
+  currentUser: User
   onChange: (data: AppData) => void
   onLogout: () => void
 }
 
-export function SettingsPage({ data, onChange, onLogout }: SettingsPageProps) {
+function avatarText(user: User) {
+  const name = user.nickName || user.displayName
+  return name.slice(1, 2) || name.slice(0, 1) || '?'
+}
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(new Error('头像读取失败'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function withUpdatedCurrentUser(data: AppData, openid: string, profile: Pick<User, 'nickName' | 'avatarUrl'>) {
+  return {
+    ...data,
+    users: data.users.map((user) => (
+      user.openid === openid
+        ? { ...user, ...profile }
+        : user
+    ))
+  }
+}
+
+export function SettingsPage({ data, currentUser, onChange, onLogout }: SettingsPageProps) {
   const [message, setMessage] = useState('')
+  const [savingProfile, setSavingProfile] = useState(false)
+  const [nicknameDialogOpen, setNicknameDialogOpen] = useState(false)
+  const [nicknameDraft, setNicknameDraft] = useState('')
+  const [profileView, setProfileView] = useState({
+    nickName: currentUser.nickName,
+    avatarUrl: currentUser.avatarUrl
+  })
+  const displayUser = { ...currentUser, ...profileView }
+
+  useEffect(() => {
+    setProfileView({
+      nickName: currentUser.nickName,
+      avatarUrl: currentUser.avatarUrl
+    })
+  }, [currentUser.openid, currentUser.nickName, currentUser.avatarUrl])
 
   async function handleReset() {
-    if (!window.confirm('确定清空本地数据并恢复示例数据吗？')) return
+    if (!window.confirm('确定清空当前数据吗？')) return
     onChange(await resetData())
-    setMessage('已恢复示例数据')
+    setMessage('已清空当前数据')
+  }
+
+  async function handleAvatarChange(file: File | undefined) {
+    if (!file) return
+
+    try {
+      setSavingProfile(true)
+      const avatarUrl = await readFileAsDataUrl(file)
+      const nextData = await updateUserProfile(data, currentUser.openid, {
+        nickName: displayUser.nickName || displayUser.displayName,
+        avatarUrl
+      })
+      setProfileView({
+        nickName: displayUser.nickName,
+        avatarUrl
+      })
+      onChange(withUpdatedCurrentUser(nextData, currentUser.openid, {
+        nickName: displayUser.nickName || displayUser.displayName,
+        avatarUrl
+      }))
+      setMessage('头像已更新')
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '头像上传失败')
+    } finally {
+      setSavingProfile(false)
+    }
+  }
+
+  function openNicknameDialog() {
+    setNicknameDraft(displayUser.nickName || displayUser.displayName)
+    setNicknameDialogOpen(true)
+  }
+
+  function closeNicknameDialog() {
+    setNicknameDialogOpen(false)
+    setNicknameDraft('')
+  }
+
+  async function handleNicknameSave() {
+    const nextNickName = nicknameDraft.trim()
+    if (!nextNickName) return
+
+    try {
+      setSavingProfile(true)
+      const nextData = await updateUserProfile(data, currentUser.openid, {
+        nickName: nextNickName,
+        avatarUrl: displayUser.avatarUrl
+      })
+      setProfileView({
+        nickName: nextNickName,
+        avatarUrl: displayUser.avatarUrl
+      })
+      onChange(withUpdatedCurrentUser(nextData, currentUser.openid, {
+        nickName: nextNickName,
+        avatarUrl: displayUser.avatarUrl
+      }))
+      setMessage('昵称已更新')
+      closeNicknameDialog()
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '昵称修改失败')
+    } finally {
+      setSavingProfile(false)
+    }
   }
 
   return (
     <div className="page-stack">
       <section className="card">
-        <h3>本地数据</h3>
+        <h3>我的资料</h3>
+        <div className="profile-card">
+          <label className="profile-avatar" aria-label="上传头像">
+            {displayUser.avatarUrl ? (
+              <img src={displayUser.avatarUrl} alt="头像" />
+            ) : (
+              <span>{avatarText(displayUser)}</span>
+            )}
+            <input
+              className="hidden-input"
+              type="file"
+              accept="image/*"
+              disabled={savingProfile}
+              onChange={(event) => handleAvatarChange(event.target.files?.[0])}
+            />
+          </label>
+          <div className="profile-name">
+            <strong>{displayUser.nickName || displayUser.displayName}</strong>
+            <button
+              className="profile-edit-btn"
+              type="button"
+              disabled={savingProfile}
+              aria-label="修改昵称"
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                openNicknameDialog()
+              }}
+            >
+              ✎
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {nicknameDialogOpen && (
+        <div className="dialog-mask" onClick={closeNicknameDialog}>
+          <div className="dialog-card" onClick={(event) => event.stopPropagation()}>
+            <h3>修改昵称</h3>
+            <input
+              className="input"
+              value={nicknameDraft}
+              placeholder="请输入新的昵称"
+              maxLength={20}
+              onChange={(event) => setNicknameDraft(event.target.value)}
+            />
+            <div className="dialog-actions">
+              <button className="ghost-btn" type="button" onClick={closeNicknameDialog}>取消</button>
+              <button
+                className="primary-btn small"
+                type="button"
+                disabled={savingProfile}
+                onClick={handleNicknameSave}
+              >
+                {savingProfile ? '保存中...' : '保存'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <section className="card">
+        <h3>数据概览</h3>
         <div className="data-summary">
           <span>用户：{data.users.length}</span>
           <span>纪念日：{data.anniversaries.length}</span>
           <span>留言：{data.messages.length}</span>
           <span>卡券：{data.coupons.length}</span>
         </div>
-        <button className="ghost-btn danger" onClick={handleReset}>清空并恢复示例数据</button>
+        <button className="ghost-btn danger" onClick={handleReset}>清空当前数据</button>
         <button className="text-btn block" onClick={onLogout}>退出当前身份</button>
         {message && <p className="success-text">{message}</p>}
       </section>

@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { COUPON_TEMPLATES, STATUS_TEXT } from '../config'
 import { formatDate } from '../services/date'
-import { addCoupon, updateCouponStatus } from '../services/storage'
+import { addCoupon, getServerDate, updateCouponStatus } from '../services/storage'
 import type { AppData, Coupon, CouponStatus, Session } from '../types'
 
 interface CouponsPageProps {
@@ -28,10 +28,12 @@ function normalizeCoupon(coupon: Coupon): Coupon {
 }
 
 export function CouponsPage({ data, session, onChange }: CouponsPageProps) {
-  const [activeStatus, setActiveStatus] = useState<CouponStatus | 'all'>('all')
+  const [activeStatus, setActiveStatus] = useState<CouponStatus | 'all'>('unused')
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
+  const [expireMode, setExpireMode] = useState<'none' | 'limited'>('none')
   const [expireDate, setExpireDate] = useState('')
+  const [serverToday, setServerToday] = useState('')
   const [saving, setSaving] = useState(false)
   const receivers = data.users.filter((user) => user.openid !== session.openid)
   const [receiverOpenid, setReceiverOpenid] = useState(receivers[0]?.openid || '')
@@ -46,22 +48,45 @@ export function CouponsPage({ data, session, onChange }: CouponsPageProps) {
       : normalized.filter((coupon) => coupon.status === activeStatus)
   }, [activeStatus, data.coupons])
 
+  useEffect(() => {
+    getServerDate()
+      .then(setServerToday)
+      .catch(() => setServerToday(formatDate()))
+  }, [])
+
+  async function changeExpireMode(value: 'none' | 'limited') {
+    setExpireMode(value)
+
+    if (value === 'limited') {
+      const today = serverToday || await getServerDate()
+      setServerToday(today)
+      setExpireDate(!expireDate || expireDate < today ? today : expireDate)
+      return
+    }
+
+    setExpireDate('')
+  }
+
   async function createCoupon() {
     const trimmedTitle = title.trim()
     const receiver = receivers.find((item) => item.openid === receiverOpenid)
     if (!trimmedTitle || !receiver) return
+    const normalizedExpireDate = expireMode === 'limited'
+      ? (!expireDate || (serverToday && expireDate < serverToday) ? serverToday : expireDate)
+      : ''
 
     try {
       setSaving(true)
       onChange(await addCoupon(data, {
         title: trimmedTitle,
         description: description.trim(),
-        expireDate,
+        expireDate: normalizedExpireDate,
         receiverOpenid: receiver.openid,
         receiverName: receiver.displayName
       }, session))
       setTitle('')
       setDescription('')
+      setExpireMode('none')
       setExpireDate('')
     } finally {
       setSaving(false)
@@ -113,12 +138,34 @@ export function CouponsPage({ data, session, onChange }: CouponsPageProps) {
             <option key={receiver.id} value={receiver.openid}>{receiver.displayName}</option>
           ))}
         </select>
-        <input
-          className="input"
-          type="date"
-          value={expireDate}
-          onChange={(event) => setExpireDate(event.target.value)}
-        />
+        <div className="segmented-row">
+          <button
+            className={expireMode === 'none' ? 'segmented-btn active' : 'segmented-btn'}
+            type="button"
+            onClick={() => changeExpireMode('none')}
+          >
+            长期有效
+          </button>
+          <button
+            className={expireMode === 'limited' ? 'segmented-btn active' : 'segmented-btn'}
+            type="button"
+            onClick={() => changeExpireMode('limited')}
+          >
+            限期使用
+          </button>
+        </div>
+        {expireMode === 'limited' && (
+          <input
+            className="input"
+            type="date"
+            min={serverToday}
+            value={expireDate || serverToday}
+            onChange={(event) => {
+              const nextDate = event.target.value
+              setExpireDate(serverToday && nextDate < serverToday ? serverToday : nextDate)
+            }}
+          />
+        )}
         <button className="primary-btn" disabled={saving} onClick={createCoupon}>
           {saving ? '发送中...' : '发送给对方'}
         </button>
@@ -145,7 +192,7 @@ export function CouponsPage({ data, session, onChange }: CouponsPageProps) {
                 <strong>{coupon.title}</strong>
                 <span>{STATUS_TEXT[coupon.status]}</span>
               </div>
-              <p>{coupon.description || '没有使用说明'}</p>
+              {coupon.description && <p>{coupon.description}</p>}
               <small>
                 {coupon.creatorName} 送给 {coupon.receiverName}
                 {coupon.expireDate ? ` · 有效期至 ${coupon.expireDate}` : ' · 长期有效'}

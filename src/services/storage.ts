@@ -33,6 +33,11 @@ export function loadData() {
   return request<AppData>('/api/data')
 }
 
+export async function getServerDate() {
+  const result = await request<{ date: string }>('/api/server-date')
+  return result.date
+}
+
 export function getSession() {
   return safeParse<Session>(localStorage.getItem(SESSION_KEY))
 }
@@ -83,8 +88,26 @@ export async function login(roleKey: RoleKey, inviteCode: string) {
   return result
 }
 
+export function updateUserProfile(
+  _data: AppData,
+  openid: string,
+  payload: { nickName: string; avatarUrl: string }
+) {
+  return request<AppData>(`/api/users/${openid}/profile`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+}
+
 export function addAnniversary(_data: AppData, title: string, date: string, session: Session) {
   return request<AppData>('/api/anniversaries', {
+    method: 'POST',
+    body: JSON.stringify({ title, date, openid: session.openid })
+  })
+}
+
+export function updateAnniversary(_data: AppData, id: string, title: string, date: string, session: Session) {
+  return request<AppData>(`/api/anniversaries/${id}`, {
     method: 'POST',
     body: JSON.stringify({ title, date, openid: session.openid })
   })
@@ -106,6 +129,24 @@ export function markMessagesRead(_data: AppData, session: Session) {
 
 export function pinMessage(_data: AppData, id: string) {
   return request<AppData>(`/api/messages/${id}/pin`, { method: 'POST' })
+}
+
+export function setMessagePinned(_data: AppData, id: string, pinned: boolean) {
+  return request<AppData>(`/api/messages/${id}/pin`, {
+    method: 'POST',
+    body: JSON.stringify({ pinned })
+  })
+}
+
+export function updateMessage(_data: AppData, id: string, content: string) {
+  return request<AppData>(`/api/messages/${id}/update`, {
+    method: 'POST',
+    body: JSON.stringify({ content })
+  })
+}
+
+export function deleteMessage(_data: AppData, id: string) {
+  return request<AppData>(`/api/messages/${id}`, { method: 'DELETE' })
 }
 
 export function addCoupon(

@@ -110,7 +110,7 @@ export default function App() {
           <CouponsPage data={data} session={session} onChange={setData} />
         )}
         {page === 'settings' && (
-          <SettingsPage data={data} onChange={setData} onLogout={handleLogout} />
+          <SettingsPage data={data} currentUser={currentUser} onChange={setData} onLogout={handleLogout} />
         )}
       </main>
 
