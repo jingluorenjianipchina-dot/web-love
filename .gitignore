@@ -2,6 +2,7 @@ node_modules/
 dist/
 server/data/*.sqlite
 server/data/*.sqlite-*
+server/data/uploads/
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts

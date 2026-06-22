@@ -8,8 +8,9 @@ import { ROLE_OPTIONS } from './config.mjs'
 const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const dataDir = path.join(__dirname, 'data')
+export const uploadsDir = path.join(dataDir, 'uploads')
+const avatarDir = path.join(uploadsDir, 'avatars')
 const dbPath = process.env.DB_PATH || path.join(dataDir, 'love.sqlite')
-
 let db
 
 function now() {
@@ -18,6 +19,25 @@ function now() {
 
 function createId(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`
+}
+
+function safeFilePart(value) {
+  return String(value || '').replace(/[^a-zA-Z0-9_-]/g, '_')
+}
+
+function saveAvatarDataUrl(openid, avatarUrl) {
+  if (!avatarUrl || !String(avatarUrl).startsWith('data:image/')) {
+    return avatarUrl
+  }
+
+  const match = String(avatarUrl).match(/^data:image\/(png|jpe?g|webp);base64,(.+)$/)
+  if (!match) return ''
+
+  const extension = match[1] === 'jpeg' ? 'jpg' : match[1]
+  const fileName = `${safeFilePart(openid)}-${Date.now()}.${extension}`
+  fs.mkdirSync(avatarDir, { recursive: true })
+  fs.writeFileSync(path.join(avatarDir, fileName), Buffer.from(match[2], 'base64'))
+  return `/api/uploads/avatars/${fileName}`
 }
 
 function persist() {
@@ -243,6 +263,17 @@ function seedData() {
   persist()
 }
 
+function migrateBase64Avatars() {
+  const users = rows(`SELECT openid, avatar_url FROM users WHERE avatar_url LIKE 'data:image/%'`)
+  if (!users.length) return
+
+  users.forEach((user) => {
+    const avatarUrl = saveAvatarDataUrl(user.openid, user.avatar_url)
+    db.run('UPDATE users SET avatar_url = ?, updated_at = ? WHERE openid = ?', [avatarUrl, now(), user.openid])
+  })
+  persist()
+}
+
 export async function initDb() {
   fs.mkdirSync(dataDir, { recursive: true })
   const SQL = await initSqlJs({
@@ -254,6 +285,7 @@ export async function initDb() {
 
   createSchema()
   seedData()
+  migrateBase64Avatars()
 }
 
 export function getData() {
@@ -287,12 +319,13 @@ export function login(roleKey, inviteCode) {
 export function updateUserProfile({ openid, nickName, avatarUrl }) {
   const user = findUserByOpenid(openid)
   if (!user) throw new Error('用户不存在')
+  const nextAvatarUrl = saveAvatarDataUrl(openid, avatarUrl ?? user.avatarUrl)
 
   run(
     `UPDATE users
       SET nick_name = ?, avatar_url = ?, updated_at = ?
       WHERE openid = ?`,
-    [nickName || user.nickName, avatarUrl ?? user.avatarUrl, now(), openid]
+    [nickName || user.nickName, nextAvatarUrl, now(), openid]
   )
   return getData()
 }

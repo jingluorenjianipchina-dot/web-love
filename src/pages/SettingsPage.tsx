@@ -14,13 +14,35 @@ function avatarText(user: User) {
   return name.slice(1, 2) || name.slice(0, 1) || '?'
 }
 
-function readFileAsDataUrl(file: File) {
+function readImageFile(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => resolve(String(reader.result || ''))
     reader.onerror = () => reject(new Error('头像读取失败'))
     reader.readAsDataURL(file)
   })
+}
+
+async function compressAvatar(file: File) {
+  const dataUrl = await readImageFile(file)
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const nextImage = new Image()
+    nextImage.onload = () => resolve(nextImage)
+    nextImage.onerror = () => reject(new Error('头像读取失败'))
+    nextImage.src = dataUrl
+  })
+  const size = 256
+  const canvas = document.createElement('canvas')
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('当前浏览器不支持头像压缩')
+
+  canvas.width = size
+  canvas.height = size
+  const sourceSize = Math.min(image.width, image.height)
+  const sourceX = (image.width - sourceSize) / 2
+  const sourceY = (image.height - sourceSize) / 2
+  context.drawImage(image, sourceX, sourceY, sourceSize, sourceSize, 0, 0, size, size)
+  return canvas.toDataURL('image/jpeg', 0.78)
 }
 
 function withUpdatedCurrentUser(data: AppData, openid: string, profile: Pick<User, 'nickName' | 'avatarUrl'>) {
@@ -63,18 +85,20 @@ export function SettingsPage({ data, currentUser, onChange, onLogout }: Settings
 
     try {
       setSavingProfile(true)
-      const avatarUrl = await readFileAsDataUrl(file)
+      const avatarUrl = await compressAvatar(file)
       const nextData = await updateUserProfile(data, currentUser.openid, {
         nickName: displayUser.nickName || displayUser.displayName,
         avatarUrl
       })
+      const savedUser = nextData.users.find((user) => user.openid === currentUser.openid)
+      const savedAvatarUrl = savedUser?.avatarUrl || avatarUrl
       setProfileView({
         nickName: displayUser.nickName,
-        avatarUrl
+        avatarUrl: savedAvatarUrl
       })
       onChange(withUpdatedCurrentUser(nextData, currentUser.openid, {
         nickName: displayUser.nickName || displayUser.displayName,
-        avatarUrl
+        avatarUrl: savedAvatarUrl
       }))
       setMessage('头像已更新')
     } catch (error) {

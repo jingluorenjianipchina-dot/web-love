@@ -15,6 +15,7 @@ import {
   replaceData,
   resetData,
   setMessagePinned,
+  uploadsDir,
   updateMessage,
   updateAnniversary,
   updateCouponStatus,
@@ -29,6 +30,10 @@ const port = Number(process.env.PORT || 3001)
 
 app.use(cors())
 app.use(express.json({ limit: '6mb' }))
+app.use('/api/uploads', express.static(uploadsDir, {
+  immutable: true,
+  maxAge: '365d'
+}))
 
 function asyncRoute(handler) {
   return async (req, res, next) => {
