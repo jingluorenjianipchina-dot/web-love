@@ -43,7 +43,13 @@ export function HomePage({ data, currentUser }: HomePageProps) {
         <div className="user-row">
           {data.users.map((user) => (
             <div className="avatar-card" key={user.id}>
-              <div className="avatar">{avatarText(user)}</div>
+              <div className="avatar">
+                {user.avatarUrl ? (
+                  <img src={user.avatarUrl} alt={`${user.displayName}头像`} />
+                ) : (
+                  avatarText(user)
+                )}
+              </div>
               <strong>{user.displayName}</strong>
             </div>
           ))}

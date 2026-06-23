@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { resetData, updateUserProfile } from '../services/storage'
 import type { AppData, User } from '../types'
 
@@ -61,11 +61,14 @@ export function SettingsPage({ data, currentUser, onChange, onLogout }: Settings
   const [savingProfile, setSavingProfile] = useState(false)
   const [nicknameDialogOpen, setNicknameDialogOpen] = useState(false)
   const [nicknameDraft, setNicknameDraft] = useState('')
+  const [avatarPreviewOpen, setAvatarPreviewOpen] = useState(false)
   const [profileView, setProfileView] = useState({
     nickName: currentUser.nickName,
     avatarUrl: currentUser.avatarUrl
   })
   const displayUser = { ...currentUser, ...profileView }
+  const longPressTimer = useRef(0)
+  const longPressTriggered = useRef(false)
 
   useEffect(() => {
     setProfileView({
@@ -118,6 +121,37 @@ export function SettingsPage({ data, currentUser, onChange, onLogout }: Settings
     setNicknameDraft('')
   }
 
+  function openAvatarPicker() {
+    document.getElementById('profile-avatar-input')?.click()
+  }
+
+  function startAvatarLongPress() {
+    window.clearTimeout(longPressTimer.current)
+    longPressTriggered.current = false
+    longPressTimer.current = window.setTimeout(() => {
+      longPressTriggered.current = true
+      openAvatarPicker()
+    }, 550)
+  }
+
+  function cancelAvatarLongPress() {
+    window.clearTimeout(longPressTimer.current)
+  }
+
+  function handleAvatarClick() {
+    if (longPressTriggered.current) {
+      longPressTriggered.current = false
+      return
+    }
+
+    if (displayUser.avatarUrl) {
+      setAvatarPreviewOpen(true)
+      return
+    }
+
+    openAvatarPicker()
+  }
+
   async function handleNicknameSave() {
     const nextNickName = nicknameDraft.trim()
     if (!nextNickName) return
@@ -150,20 +184,31 @@ export function SettingsPage({ data, currentUser, onChange, onLogout }: Settings
       <section className="card">
         <h3>我的资料</h3>
         <div className="profile-card">
-          <label className="profile-avatar" aria-label="上传头像">
+          <button
+            className="profile-avatar"
+            type="button"
+            aria-label="查看头像，长按更换头像"
+            onClick={handleAvatarClick}
+            onMouseDown={startAvatarLongPress}
+            onMouseUp={cancelAvatarLongPress}
+            onMouseLeave={cancelAvatarLongPress}
+            onTouchStart={startAvatarLongPress}
+            onTouchEnd={cancelAvatarLongPress}
+          >
             {displayUser.avatarUrl ? (
               <img src={displayUser.avatarUrl} alt="头像" />
             ) : (
               <span>{avatarText(displayUser)}</span>
             )}
-            <input
-              className="hidden-input"
-              type="file"
-              accept="image/*"
-              disabled={savingProfile}
-              onChange={(event) => handleAvatarChange(event.target.files?.[0])}
-            />
-          </label>
+          </button>
+          <input
+            id="profile-avatar-input"
+            className="hidden-input"
+            type="file"
+            accept="image/*"
+            disabled={savingProfile}
+            onChange={(event) => handleAvatarChange(event.target.files?.[0])}
+          />
           <div className="profile-name">
             <strong>{displayUser.nickName || displayUser.displayName}</strong>
             <button
@@ -182,6 +227,15 @@ export function SettingsPage({ data, currentUser, onChange, onLogout }: Settings
           </div>
         </div>
       </section>
+
+      {avatarPreviewOpen && displayUser.avatarUrl && (
+        <div className="dialog-mask" onClick={() => setAvatarPreviewOpen(false)}>
+          <div className="avatar-preview-card" onClick={(event) => event.stopPropagation()}>
+            <img src={displayUser.avatarUrl} alt="头像大图" />
+            <button className="ghost-btn" type="button" onClick={() => setAvatarPreviewOpen(false)}>关闭</button>
+          </div>
+        </div>
+      )}
 
       {nicknameDialogOpen && (
         <div className="dialog-mask" onClick={closeNicknameDialog}>
