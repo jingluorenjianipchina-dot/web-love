@@ -4,8 +4,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   addAnniversary,
+  addAlbum,
   addCoupon,
   addMessage,
+  deleteAlbum,
   deleteMessage,
   getData,
   initDb,
@@ -29,7 +31,7 @@ const app = express()
 const port = Number(process.env.PORT || 3001)
 
 app.use(cors())
-app.use(express.json({ limit: '6mb' }))
+app.use(express.json({ limit: '10mb' }))
 app.use('/api/uploads', express.static(uploadsDir, {
   immutable: true,
   maxAge: '365d'
@@ -181,6 +183,26 @@ app.post('/api/coupons/:id/status', (req, res) => {
     status: req.body.status,
     openid: req.body.openid
   }))
+})
+
+app.post('/api/albums', (req, res) => {
+  const imageUrl = String(req.body.imageUrl || '')
+  if (!imageUrl) {
+    res.status(400).json({ message: '照片不能为空' })
+    return
+  }
+
+  res.json(addAlbum({
+    title: String(req.body.title || '').trim(),
+    description: String(req.body.description || '').trim(),
+    imageUrl,
+    memoryDate: String(req.body.memoryDate || '').trim(),
+    openid: req.body.openid
+  }))
+})
+
+app.delete('/api/albums/:id', (req, res) => {
+  res.json(deleteAlbum(req.params.id))
 })
 
 app.get('/api/export', (_req, res) => {

@@ -10,6 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const dataDir = path.join(__dirname, 'data')
 export const uploadsDir = path.join(dataDir, 'uploads')
 const avatarDir = path.join(uploadsDir, 'avatars')
+const albumDir = path.join(uploadsDir, 'albums')
 const dbPath = process.env.DB_PATH || path.join(dataDir, 'love.sqlite')
 let db
 
@@ -25,19 +26,27 @@ function safeFilePart(value) {
   return String(value || '').replace(/[^a-zA-Z0-9_-]/g, '_')
 }
 
-function saveAvatarDataUrl(openid, avatarUrl) {
-  if (!avatarUrl || !String(avatarUrl).startsWith('data:image/')) {
-    return avatarUrl
+function saveImageDataUrl(folder, urlPrefix, filePrefix, imageUrl) {
+  if (!imageUrl || !String(imageUrl).startsWith('data:image/')) {
+    return imageUrl
   }
 
-  const match = String(avatarUrl).match(/^data:image\/(png|jpe?g|webp);base64,(.+)$/)
+  const match = String(imageUrl).match(/^data:image\/(png|jpe?g|webp);base64,(.+)$/)
   if (!match) return ''
 
   const extension = match[1] === 'jpeg' ? 'jpg' : match[1]
-  const fileName = `${safeFilePart(openid)}-${Date.now()}.${extension}`
-  fs.mkdirSync(avatarDir, { recursive: true })
-  fs.writeFileSync(path.join(avatarDir, fileName), Buffer.from(match[2], 'base64'))
-  return `/api/uploads/avatars/${fileName}`
+  const fileName = `${safeFilePart(filePrefix)}-${Date.now()}.${extension}`
+  fs.mkdirSync(folder, { recursive: true })
+  fs.writeFileSync(path.join(folder, fileName), Buffer.from(match[2], 'base64'))
+  return `${urlPrefix}/${fileName}`
+}
+
+function saveAvatarDataUrl(openid, avatarUrl) {
+  return saveImageDataUrl(avatarDir, '/api/uploads/avatars', openid, avatarUrl)
+}
+
+function saveAlbumDataUrl(openid, imageUrl) {
+  return saveImageDataUrl(albumDir, '/api/uploads/albums', openid, imageUrl)
 }
 
 function persist() {
@@ -137,6 +146,20 @@ function normalizeCoupon(item) {
   }
 }
 
+function normalizeAlbum(item) {
+  return {
+    id: item.id,
+    title: item.title,
+    description: item.description,
+    imageUrl: item.image_url,
+    memoryDate: item.memory_date,
+    creatorOpenid: item.creator_openid,
+    creatorName: item.creator_name,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at
+  }
+}
+
 function createSchema() {
   db.run(`
     CREATE TABLE IF NOT EXISTS users (
@@ -187,6 +210,18 @@ function createSchema() {
       confirm_openid TEXT NOT NULL DEFAULT '',
       requested_at TEXT,
       used_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS albums (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      image_url TEXT NOT NULL,
+      memory_date TEXT NOT NULL DEFAULT '',
+      creator_openid TEXT NOT NULL,
+      creator_name TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -293,7 +328,8 @@ export function getData() {
     users: rows('SELECT * FROM users ORDER BY role_key').map(normalizeUser),
     anniversaries: rows('SELECT * FROM anniversaries ORDER BY date ASC').map(normalizeAnniversary),
     messages: rows('SELECT * FROM messages ORDER BY pinned DESC, created_at DESC').map(normalizeMessage),
-    coupons: rows('SELECT * FROM coupons ORDER BY created_at DESC').map(normalizeCoupon)
+    coupons: rows('SELECT * FROM coupons ORDER BY created_at DESC').map(normalizeCoupon),
+    albums: rows('SELECT * FROM albums ORDER BY memory_date DESC, created_at DESC').map(normalizeAlbum)
   }
 }
 
@@ -463,7 +499,39 @@ export function updateCouponStatus({ id, status, openid }) {
   return getData()
 }
 
+export function addAlbum(payload) {
+  const user = findUserByOpenid(payload.openid)
+  if (!user) throw new Error('身份不存在')
+
+  const imageUrl = saveAlbumDataUrl(user.openid, payload.imageUrl)
+  if (!imageUrl) throw new Error('照片不能为空')
+
+  run(
+    `INSERT INTO albums (
+      id, title, description, image_url, memory_date, creator_openid, creator_name, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      createId('album'),
+      payload.title || '',
+      payload.description || '',
+      imageUrl,
+      payload.memoryDate || new Date().toISOString().slice(0, 10),
+      user.openid,
+      user.displayName,
+      now(),
+      now()
+    ]
+  )
+  return getData()
+}
+
+export function deleteAlbum(id) {
+  run('DELETE FROM albums WHERE id = ?', [id])
+  return getData()
+}
+
 export function replaceData(data) {
+  db.run('DELETE FROM albums')
   db.run('DELETE FROM coupons')
   db.run('DELETE FROM messages')
   db.run('DELETE FROM anniversaries')
@@ -523,11 +591,31 @@ export function replaceData(data) {
     )
   })
 
+  ;(data.albums || []).forEach((album) => {
+    db.run(
+      `INSERT INTO albums (
+        id, title, description, image_url, memory_date, creator_openid, creator_name, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        album.id,
+        album.title || '',
+        album.description || '',
+        album.imageUrl,
+        album.memoryDate || '',
+        album.creatorOpenid,
+        album.creatorName,
+        album.createdAt,
+        album.updatedAt
+      ]
+    )
+  })
+
   persist()
   return getData()
 }
 
 export function resetData() {
+  db.run('DELETE FROM albums')
   db.run('DELETE FROM coupons')
   db.run('DELETE FROM messages')
   db.run('DELETE FROM anniversaries')
