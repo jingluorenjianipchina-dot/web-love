@@ -7,10 +7,14 @@ import { ROLE_OPTIONS } from './config.mjs'
 
 const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const dataDir = path.join(__dirname, 'data')
+// DATA_DIR 可把数据目录（数据库+上传文件）搬到项目外，
+// 本地开发时避免开发者工具监听到文件变化而反复重编译小程序
+const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data')
 export const uploadsDir = path.join(dataDir, 'uploads')
 const avatarDir = path.join(uploadsDir, 'avatars')
 const albumDir = path.join(uploadsDir, 'albums')
+const videoDir = path.join(uploadsDir, 'videos')
+export { videoDir }
 const dbPath = process.env.DB_PATH || path.join(dataDir, 'love.sqlite')
 let db
 
@@ -160,6 +164,45 @@ function normalizeAlbum(item) {
   }
 }
 
+function normalizeVideo(item) {
+  return {
+    id: item.id,
+    title: item.title,
+    status: item.status,
+    url: `/api/uploads/videos/${item.filename}`,
+    sizeBytes: item.size_bytes,
+    creatorOpenid: item.creator_openid,
+    creatorName: item.creator_name,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at
+  }
+}
+
+function normalizeRoom(item) {
+  return {
+    id: item.id,
+    videoId: item.video_id,
+    videoTitle: item.video_title,
+    videoStatus: item.video_status,
+    status: item.status,
+    initiatorOpenid: item.initiator_openid,
+    initiatorName: item.initiator_name,
+    createdAt: item.created_at,
+    finishedAt: item.finished_at || undefined
+  }
+}
+
+function normalizeRoomMessage(item) {
+  return {
+    id: item.id,
+    roomId: item.room_id,
+    senderOpenid: item.sender_openid,
+    senderName: item.sender_name,
+    content: item.content,
+    createdAt: item.created_at
+  }
+}
+
 function createSchema() {
   db.run(`
     CREATE TABLE IF NOT EXISTS users (
@@ -170,6 +213,7 @@ function createSchema() {
       nick_name TEXT NOT NULL,
       avatar_url TEXT NOT NULL DEFAULT '',
       birthday TEXT NOT NULL DEFAULT '',
+      wx_openid TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -225,8 +269,50 @@ function createSchema() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS videos (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT '',
+      filename TEXT UNIQUE NOT NULL,
+      status TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL DEFAULT 0,
+      creator_openid TEXT NOT NULL,
+      creator_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS rooms (
+      id TEXT PRIMARY KEY,
+      video_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      initiator_openid TEXT NOT NULL,
+      initiator_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS room_messages (
+      id TEXT PRIMARY KEY,
+      room_id TEXT NOT NULL,
+      sender_openid TEXT NOT NULL,
+      sender_name TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `)
   persist()
+}
+
+// 老库没有 wx_openid 列时自动补上（存真实微信 openid，供内容安全检测使用）
+function ensureWxOpenidColumn() {
+  const result = db.exec('PRAGMA table_info(users)')
+  const columns = result[0] ? result[0].values.map((entry) => entry[1]) : []
+  if (columns.length && !columns.includes('wx_openid')) {
+    db.run(`ALTER TABLE users ADD COLUMN wx_openid TEXT NOT NULL DEFAULT ''`)
+    persist()
+  }
 }
 
 function seedData() {
@@ -319,6 +405,7 @@ export async function initDb() {
     : new SQL.Database()
 
   createSchema()
+  ensureWxOpenidColumn()
   seedData()
   migrateBase64Avatars()
 }
@@ -329,13 +416,37 @@ export function getData() {
     anniversaries: rows('SELECT * FROM anniversaries ORDER BY date ASC').map(normalizeAnniversary),
     messages: rows('SELECT * FROM messages ORDER BY pinned DESC, created_at DESC').map(normalizeMessage),
     coupons: rows('SELECT * FROM coupons ORDER BY created_at DESC').map(normalizeCoupon),
-    albums: rows('SELECT * FROM albums ORDER BY memory_date DESC, created_at DESC').map(normalizeAlbum)
+    albums: rows('SELECT * FROM albums ORDER BY memory_date DESC, created_at DESC').map(normalizeAlbum),
+    videos: rows('SELECT * FROM videos ORDER BY created_at DESC').map(normalizeVideo),
+    rooms: rows(`
+      SELECT rooms.*, videos.title AS video_title, videos.status AS video_status
+      FROM rooms LEFT JOIN videos ON videos.id = rooms.video_id
+      ORDER BY rooms.created_at DESC
+    `).map(normalizeRoom)
   }
 }
 
 export function findUserByOpenid(openid) {
   const user = row('SELECT * FROM users WHERE openid = ?', [openid])
   return user ? normalizeUser(user) : null
+}
+
+export function setWxOpenid(openid, wxOpenid) {
+  const user = row('SELECT id FROM users WHERE openid = ?', [openid])
+  if (!user) throw new Error('用户不存在')
+
+  run('UPDATE users SET wx_openid = ?, updated_at = ? WHERE openid = ?', [wxOpenid, now(), openid])
+  return true
+}
+
+export function getWxOpenid(openid) {
+  const user = row('SELECT wx_openid FROM users WHERE openid = ?', [openid])
+  return (user && user.wx_openid) || ''
+}
+
+export function getMessageSenderOpenid(id) {
+  const message = row('SELECT sender_openid FROM messages WHERE id = ?', [id])
+  return (message && message.sender_openid) || ''
 }
 
 export function login(roleKey, inviteCode) {
@@ -528,6 +639,153 @@ export function addAlbum(payload) {
 export function deleteAlbum(id) {
   run('DELETE FROM albums WHERE id = ?', [id])
   return getData()
+}
+
+// ---------- 一起看：视频 / 房间 ----------
+
+export function addVideoRecord({ id, title, filename, sizeBytes, openid, status }) {
+  const user = findUserByOpenid(openid)
+  if (!user) throw new Error('身份不存在')
+
+  run(
+    `INSERT INTO videos (
+      id, title, filename, status, size_bytes, creator_openid, creator_name, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, title || '', filename, status, sizeBytes || 0, user.openid, user.displayName, now(), now()]
+  )
+  return row('SELECT * FROM videos WHERE id = ?', [id])
+}
+
+export function getVideo(id) {
+  return row('SELECT * FROM videos WHERE id = ?', [id])
+}
+
+export function findVideoByFilename(filename) {
+  return row('SELECT * FROM videos WHERE filename = ?', [filename])
+}
+
+export function setVideoStatus(id, status) {
+  run('UPDATE videos SET status = ?, updated_at = ? WHERE id = ?', [status, now(), id])
+}
+
+export function deleteVideo(id) {
+  const video = getVideo(id)
+  if (video) {
+    // 同步结束引用该视频的未完成房间，避免出现指向已删视频的“幽灵房间”
+    run(
+      `UPDATE rooms SET status = 'finished', updated_at = ?, finished_at = ?
+        WHERE video_id = ? AND status IN ('waiting', 'active')`,
+      [now(), now(), id]
+    )
+    try { fs.unlinkSync(path.join(videoDir, video.filename)) } catch {}
+    run('DELETE FROM videos WHERE id = ?', [id])
+  }
+  return getData()
+}
+
+export function getActiveRoom() {
+  return row(`SELECT rooms.*, videos.title AS video_title, videos.status AS video_status
+    FROM rooms LEFT JOIN videos ON videos.id = rooms.video_id
+    WHERE rooms.status IN ('waiting', 'active') LIMIT 1`)
+}
+
+export function addRoom({ videoId, openid }) {
+  const user = findUserByOpenid(openid)
+  if (!user) throw new Error('身份不存在')
+
+  const id = createId('room')
+  run(
+    `INSERT INTO rooms (
+      id, video_id, status, initiator_openid, initiator_name, created_at, updated_at, finished_at
+    ) VALUES (?, ?, 'waiting', ?, ?, ?, ?, NULL)`,
+    [id, videoId, user.openid, user.displayName, now(), now()]
+  )
+  return getRoom(id)
+}
+
+export function getRoom(id) {
+  return row(`SELECT rooms.*, videos.title AS video_title, videos.status AS video_status
+    FROM rooms LEFT JOIN videos ON videos.id = rooms.video_id
+    WHERE rooms.id = ?`, [id])
+}
+
+export function setRoomStatus(id, status) {
+  const finishedAt = status === 'finished' ? now() : null
+  run('UPDATE rooms SET status = ?, updated_at = ?, finished_at = ? WHERE id = ?', [status, now(), finishedAt, id])
+}
+
+export function addRoomMessage({ roomId, openid, content }) {
+  const user = findUserByOpenid(openid)
+  if (!user) throw new Error('身份不存在')
+
+  const message = {
+    id: createId('roommsg'),
+    room_id: roomId,
+    sender_openid: user.openid,
+    sender_name: user.displayName,
+    content,
+    created_at: now()
+  }
+  run(
+    `INSERT INTO room_messages (id, room_id, sender_openid, sender_name, content, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)`,
+    [message.id, message.room_id, message.sender_openid, message.sender_name, message.content, message.created_at]
+  )
+  return normalizeRoomMessage(message)
+}
+
+export function getRoomMessages(roomId) {
+  return rows('SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at ASC', [roomId]).map(normalizeRoomMessage)
+}
+
+export function deleteRoomMessages(roomId) {
+  run('DELETE FROM room_messages WHERE room_id = ?', [roomId])
+}
+
+// 定期清理：已看完 72 小时删视频，房间+聊天保留 7 天，检测卡住超 24h 的视频放行兜底
+export function purgeWatchData() {
+  const nowMs = Date.now()
+  const VIDEO_TTL_MS = 72 * 60 * 60 * 1000
+  const ROOM_TTL_MS = 7 * 24 * 60 * 60 * 1000
+  const CHECK_STUCK_MS = 24 * 60 * 60 * 1000
+  const removed = { videos: 0, rooms: 0 }
+
+  rows(`SELECT * FROM rooms WHERE status = 'finished' AND finished_at IS NOT NULL`).forEach((room) => {
+    const finishedMs = Date.parse(room.finished_at)
+    if (Number.isNaN(finishedMs)) return
+
+    if (nowMs - finishedMs >= VIDEO_TTL_MS && room.video_id) {
+      const video = getVideo(room.video_id)
+      if (video) {
+        try { fs.unlinkSync(path.join(videoDir, video.filename)) } catch {}
+        run('DELETE FROM videos WHERE id = ?', [video.id])
+        removed.videos += 1
+      }
+    }
+
+    if (nowMs - finishedMs >= ROOM_TTL_MS) {
+      deleteRoomMessages(room.id)
+      run('DELETE FROM rooms WHERE id = ?', [room.id])
+      removed.rooms += 1
+    }
+  })
+
+  rows(`SELECT * FROM videos WHERE status = 'rejected'`).forEach((video) => {
+    if (nowMs - Date.parse(video.updated_at) >= ROOM_TTL_MS) {
+      try { fs.unlinkSync(path.join(videoDir, video.filename)) } catch {}
+      run('DELETE FROM videos WHERE id = ?', [video.id])
+      removed.videos += 1
+    }
+  })
+
+  rows(`SELECT * FROM videos WHERE status = 'checking'`).forEach((video) => {
+    if (nowMs - Date.parse(video.updated_at) >= CHECK_STUCK_MS) {
+      console.warn(`[content-security] 视频检测结果超 24h 未回（${video.id}），兜底放行`)
+      setVideoStatus(video.id, 'ready')
+    }
+  })
+
+  return removed
 }
 
 export function replaceData(data) {

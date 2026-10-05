@@ -139,9 +139,10 @@ export function setMessagePinned(_data: AppData, id: string, pinned: boolean) {
 }
 
 export function updateMessage(_data: AppData, id: string, content: string) {
+  const session = getSession()
   return request<AppData>(`/api/messages/${id}/update`, {
     method: 'POST',
-    body: JSON.stringify({ content })
+    body: JSON.stringify({ content, openid: session?.openid })
   })
 }
 

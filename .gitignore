@@ -7,3 +7,7 @@ server/data/uploads/
 vite.config.js
 vite.config.d.ts
 .DS_Store
+
+# 环境变量（含 AppSecret，绝不能提交）
+.env
+server/.env
