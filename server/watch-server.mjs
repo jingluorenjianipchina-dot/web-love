@@ -18,6 +18,10 @@ import { checkText } from './wechat-security.mjs'
 const AUTO_FINISH_DELAY_MS = 60 * 1000 // 双方都离开 1 分钟后自动结束房间
 const PING_INTERVAL_MS = 30 * 1000
 
+// 房间内存态：roomId → { conns: Map<openid, Set<ws>>, state, finishTimer }。
+// 放在模块顶层，供 setupWatchServer 与 getActiveWatchRoomIds（清理任务）共用。
+const rooms = new Map()
+
 function safeSend(ws, payload) {
   if (ws.readyState === ws.OPEN) {
     ws.send(JSON.stringify(payload))
@@ -35,8 +39,6 @@ export function getActiveWatchRoomIds() {
 
 export function setupWatchServer(httpServer) {
   const wss = new WebSocketServer({ server: httpServer, path: '/ws/watch' })
-  // roomId → { videoId, conns: Map<openid, Set<ws>>, state: {playing, position, updatedAt}, finishTimer }
-  const rooms = new Map()
 
   function getRoomState(roomId) {
     if (!rooms.has(roomId)) {
