@@ -232,9 +232,59 @@ try {
   const peerOnlineA = await waitFor(alice.inbox, 'peer-online')
   check('B 加入后 A 收到 peer-online，且 B 能看到 A 在线', peerOnlineA.openid === 'local_xiaolong' && joinedB.peerOnline === true)
 
-  alice.ws.send(JSON.stringify({ type: 'state', playing: true, position: 12.5 }))
+  alice.ws.send(JSON.stringify({ type: 'state', source: 'user', playing: true, position: 12.5 }))
   const stateB = await waitFor(bob.inbox, 'state')
-  check('B 实时收到 A 的播放状态（进度同步）', stateB.playing === true && Math.abs(stateB.position - 12.5) < 0.01)
+  check('B 实时收到 A 的用户操作（进度同步）', stateB.playing === true && Math.abs(stateB.position - 12.5) < 0.01)
+  check('广播携带权威版本号 v1', stateB.version === 1, `实际 ${stateB.version}`)
+  const ackA1 = await waitFor(alice.inbox, 'state-ack')
+  check('操作者收到 state-ack 回执', ackA1.version === 1 && ackA1.playing === true)
+
+  console.log('\n== 同步协议 v2：权威状态 / 心跳校准 ==')
+  bob.ws.send(JSON.stringify({ type: 'state', source: 'heartbeat', playing: true, position: 12.6 }))
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  check('与权威一致的心跳不广播、不触发校准', alice.inbox.every((m) => m.type !== 'state') && bob.inbox.every((m) => m.type !== 'calibrate'))
+
+  bob.ws.send(JSON.stringify({ type: 'state', source: 'heartbeat', playing: true, position: 50 }))
+  const calibBob = await waitFor(bob.inbox, 'calibrate')
+  check('明显落后权威时间线的心跳触发私发校准', calibBob.playing === true
+    && calibBob.position >= 12.5 && calibBob.position <= 20
+    && calibBob.version === 1, JSON.stringify(calibBob))
+  check('校准只发给偏离者，不广播给对方', alice.inbox.every((m) => m.type !== 'state' && m.type !== 'calibrate'))
+
+  alice.ws.send(JSON.stringify({ type: 'state', source: 'user', playing: false, position: 13 }))
+  const stateB2 = await waitFor(bob.inbox, 'state')
+  check('B 收到 A 的暂停（v2）', stateB2.playing === false && Math.abs(stateB2.position - 13) < 0.01 && stateB2.version === 2)
+  await waitFor(alice.inbox, 'state-ack')
+
+  bob.ws.send(JSON.stringify({ type: 'state', source: 'heartbeat', playing: true, position: 14 }))
+  const calibBob2 = await waitFor(bob.inbox, 'calibrate')
+  check('暂停后 B 的过期心跳被校准回暂停态（不会广播覆写）', calibBob2.playing === false
+    && Math.abs(calibBob2.position - 13) < 0.01 && calibBob2.version === 2, JSON.stringify(calibBob2))
+  check('过期心跳不会改写权威状态、不影响 A', alice.inbox.every((m) => m.type !== 'state' && m.type !== 'calibrate'))
+
+  const charlie = await connectSocket(APP_PORT)
+  charlie.ws.send(JSON.stringify({ type: 'join', roomId, openid: 'local_xiaolong' }))
+  const joinedC = await waitFor(charlie.inbox, 'joined')
+  check('新加入者拿到权威快照（暂停@13s v2）', joinedC.state.playing === false
+    && Math.abs(joinedC.state.position - 13) < 0.01 && joinedC.state.version === 2, JSON.stringify(joinedC.state))
+  charlie.ws.close()
+
+  alice.ws.send(JSON.stringify({ type: 'state', playing: true, position: 15 }))
+  const stateB3 = await waitFor(bob.inbox, 'state')
+  check('不带 source 的旧协议消息按用户操作处理（兼容旧客户端）', stateB3.playing === true
+    && Math.abs(stateB3.position - 15) < 0.01 && stateB3.version === 3)
+
+  alice.ws.send(JSON.stringify({ type: 'state', source: 'user', playing: true, position: 16 }))
+  await waitFor(alice.inbox, 'state-ack', { pred: (m) => m.version === 4 })
+  bob.ws.send(JSON.stringify({ type: 'state', source: 'user', playing: false, position: 16.5 }))
+  const stateA5 = await waitFor(alice.inbox, 'state', { pred: (m) => m.version === 5 })
+  const dave = await connectSocket(APP_PORT)
+  dave.ws.send(JSON.stringify({ type: 'join', roomId, openid: 'local_xiaoqiu' }))
+  const joinedD = await waitFor(dave.inbox, 'joined')
+  check('连续快速操作后收敛到最新版本（B 的暂停 v5 胜出）', joinedD.state.version === 5
+    && joinedD.state.playing === false && Math.abs(joinedD.state.position - 16.5) < 0.01
+    && stateA5.playing === false, JSON.stringify(joinedD.state))
+  dave.ws.close()
 
   alice.ws.send(JSON.stringify({ type: 'chat', content: '这段太好笑了' }))
   const chatB = await waitFor(bob.inbox, 'chat')
@@ -356,7 +406,8 @@ try {
   createdVideoFiles.forEach((name) => {
     try { fs.unlinkSync(path.join(videoFileDir, name)) } catch {}
   })
-  try { fs.rmSync(tmp, { recursive: true, force: true }) } catch {}
+  try { fs.rmSync(tmpConfigured, { recursive: true, force: true }) } catch {}
+  try { fs.rmSync(tmpOpen, { recursive: true, force: true }) } catch {}
 }
 
 console.log(failures === 0 ? '\n全部通过 ✅' : `\n有 ${failures} 项失败 ❌`)
