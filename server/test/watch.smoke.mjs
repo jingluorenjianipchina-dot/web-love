@@ -183,7 +183,9 @@ try {
     WECHAT_PUSH_TOKEN: PUSH_TOKEN,
     WECHAT_PUSH_AES_KEY: PUSH_AES_KEY,
     MAX_VIDEO_BYTES: String(1024 * 1024),
-    DATA_DIR: tmpConfigured
+    DATA_DIR: tmpConfigured,
+    FFMPEG_PATH: 'ffmpeg-not-installed-for-test',
+    FFPROBE_PATH: 'ffprobe-not-installed-for-test'
   })
   await waitUntilReady(APP_PORT)
 
@@ -195,13 +197,12 @@ try {
   let r = await uploadVideo('good.mp4', crypto.randomBytes(20 * 1024), { title: '我们的视频' })
   check('上传 mp4 成功（200）', r.status === 200, JSON.stringify(r.data))
   let video = r.data.videos && r.data.videos[0]
-  check('上传后状态为 checking（等待微信回调）', video && video.status === 'checking', video && video.status)
-  check('mediaCheckAsync 已提交且 trace_id=视频ID', mockState.mediaChecks.length === 1 && mockState.mediaChecks[0].trace_id === video.id)
-  check('标题检测通过（mock pass 模式）', true)
+  check('测试环境无 ffmpeg，帧检测跳过直接 ready', video && video.status === 'ready', video && video.status)
+  check('不再调用 mediaCheckAsync（该接口不支持视频）', mockState.mediaChecks.length === 0)
   trackVideoFile(r.data)
 
   r = await api('GET', video.url.replace(/^\/api/, '/api'))
-  check('检测中视频文件可被微信爬虫访问（200）', r.status === 200, `实际 ${r.status}`)
+  check('ready 视频文件可访问（200）', r.status === 200, `实际 ${r.status}`)
 
   const pushResult = await sendPush('wx-mock-appid', {
     Event: 'wxa_media_check', trace_id: video.id, result: { suggest: 'pass', label: 100 }
@@ -209,7 +210,7 @@ try {
   check('消息推送回调返回 success', pushResult === 'success', pushResult)
   r = await api('GET', '/api/data')
   video = r.data.videos && r.data.videos[0]
-  check('回调 pass 后视频变 ready', video && video.status === 'ready', video && video.status)
+  check('回调后视频保持 ready', video && video.status === 'ready', video && video.status)
 
   console.log('\n== 房间接口 ==')
   r = await api('POST', '/api/rooms', { videoId: video.id, openid: 'local_xiaoqiu' })
@@ -259,29 +260,60 @@ try {
   console.log('\n== 上传限制 ==')
   r = await uploadVideo('bad.avi', crypto.randomBytes(1024))
   check('不支持的格式被拒绝（400）', r.status === 400, JSON.stringify(r.data))
-  r = await uploadVideo('big.mp4', crypto.randomBytes(1024 * 1024 + 200 * 1024))
-  check('超过大小限制被拒绝（400）', r.status === 400 && /超过/.test(r.data.message || ''), JSON.stringify(r.data))
 
-  console.log('\n== 检测不通过的视频 ==')
+  console.log('\n== 分片上传 ==')
+  const chunkUploadId = `testchunk_${Date.now()}`
+  const chunkSource = crypto.randomBytes(30 * 1024)
+  const partSize = 10 * 1024
+  const partTotal = Math.ceil(chunkSource.length / partSize)
+  for (let i = 0; i < partTotal; i += 1) {
+    const form = new FormData()
+    const slice = chunkSource.slice(i * partSize, Math.min((i + 1) * partSize, chunkSource.length))
+    form.append('file', new Blob([slice], { type: 'video/mp4' }), 'part.mp4')
+    r = await api('POST', `/api/videos/chunk?uploadId=${chunkUploadId}&index=${i}&total=${partTotal}`, form)
+    check(`分片 ${i + 1}/${partTotal} 上传成功`, r.status === 200, JSON.stringify(r.data))
+  }
+  const form0 = new FormData()
+  form0.append('file', new Blob([chunkSource.slice(0, partSize)], { type: 'video/mp4' }), 'part.mp4')
+  r = await api('POST', `/api/videos/chunk?uploadId=${chunkUploadId}&index=0&total=${partTotal}`, form0)
+  check('重复传同一片幂等成功', r.status === 200)
+
+  r = await api('POST', '/api/videos/complete', {
+    uploadId: chunkUploadId, title: '分片视频', total: partTotal, size: chunkSource.length,
+    filename: 'chunked.mp4', openid: 'local_xiaoqiu'
+  })
+  check('complete 合并成功且视频 ready', r.status === 200 && r.data.videos[0].status === 'ready', JSON.stringify(r.data))
+  const chunkVideo = r.data.videos[0]
+  check('合并后的文件可访问', (await api('GET', chunkVideo.url)).status === 200)
+
+  r = await api('POST', '/api/videos/complete', {
+    uploadId: `missing_${Date.now()}`, title: 'x', total: 3, size: 100, filename: 'a.mp4', openid: 'local_xiaoqiu'
+  })
+  check('不完整会话 complete 被拒', r.status === 400)
+
+  console.log('\n== 分片超限（测试 MAX_VIDEO_BYTES=1MB）==')
+  const bigUploadId = `big_${Date.now()}`
+  const bigPart = crypto.randomBytes(600 * 1024) // 两片共 1.2MB > 1MB 上限
+  for (let i = 0; i < 2; i += 1) {
+    const form = new FormData()
+    form.append('file', new Blob([bigPart], { type: 'video/mp4' }), 'part.mp4')
+    r = await api('POST', `/api/videos/chunk?uploadId=${bigUploadId}&index=${i}&total=2`, form)
+  }
+  r = await api('POST', '/api/videos/complete', {
+    uploadId: bigUploadId, title: 'x', total: 2, size: bigPart.length * 2, filename: 'big.mp4', openid: 'local_xiaoqiu'
+  })
+  check('分片合并后超限被拒绝（400）', r.status === 400 && /超过/.test(r.data.message || ''), JSON.stringify(r.data))
+
+  console.log('\n== 检测不通过的视频（生产环境装 ffmpeg 后生效，此处验证跳过路径）==')
   await (await fetch(`http://127.0.0.1:${MOCK_PORT}/__mode`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ risky: true })
   })).json()
-  const filesBefore = fs.existsSync(videoFileDir) ? fs.readdirSync(videoFileDir).length : 0
   r = await uploadVideo('risky.mp4', crypto.randomBytes(20 * 1024))
-  check('违规视频上传受理进入检测', r.status === 200 && r.data.videos[0].status === 'checking')
+  check('无 ffmpeg 时违规场景也按跳过放行（ready）', r.status === 200 && r.data.videos[0].status === 'ready')
   const riskyVideo = r.data.videos[0]
-  r = await sendPush('wx-mock-appid', {
-    Event: 'wxa_media_check', trace_id: riskyVideo.id, result: { suggest: 'risky', label: 20001 }
-  })
-  r = await api('GET', '/api/data')
-  const rejectedVideo = r.data.videos.find((item) => item.id === riskyVideo.id)
-  check('回调 risky 后视频变 rejected', rejectedVideo && rejectedVideo.status === 'rejected')
+  trackVideoFile(r.data)
   r = await api('GET', riskyVideo.url)
-  check('rejected 视频文件访问被拒（404）', r.status === 404)
-  r = await api('POST', '/api/rooms', { videoId: riskyVideo.id, openid: 'local_xiaoqiu' })
-  check('rejected 视频不能发起房间', r.status === 400)
-  const filesAfter = fs.existsSync(videoFileDir) ? fs.readdirSync(videoFileDir).length : 0
-  check('违规视频文件已从磁盘删除', filesAfter === filesBefore, `${filesBefore} → ${filesAfter}`)
+  check('放行的视频文件可访问（200）', r.status === 200)
 
   await (await fetch(`http://127.0.0.1:${MOCK_PORT}/__mode`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ risky: true })
@@ -307,10 +339,7 @@ try {
   })).json()
   r = await uploadVideo('del.mp4', crypto.randomBytes(20 * 1024))
   const delVideo = r.data.videos && r.data.videos[0]
-  check('删除前视频上传进入检测', r.status === 200 && delVideo && delVideo.status === 'checking')
-  await sendPush('wx-mock-appid', {
-    Event: 'wxa_media_check', trace_id: delVideo.id, result: { suggest: 'pass', label: 100 }
-  })
+  check('删除前视频已可观看', r.status === 200 && delVideo && delVideo.status === 'ready')
   r = await api('POST', '/api/rooms', { videoId: delVideo.id, openid: 'local_xiaoqiu' })
   check('房间已建立', r.status === 200 && r.data.rooms.some((room) => room.videoId === delVideo.id && room.status !== 'finished'))
   trackVideoFile(r.data)

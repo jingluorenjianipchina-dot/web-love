@@ -8,6 +8,10 @@
 // - 视频检测结果通过微信「消息推送」异步回调（/api/wx/push），用 trace_id 对应回视频。
 
 import crypto from 'node:crypto'
+import { execFile } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
 const DEFAULT_API_BASE = 'https://api.weixin.qq.com'
 const TEXT_REJECT_MESSAGE = '内容包含违规信息，请修改后再发布'
@@ -184,13 +188,86 @@ export async function checkImageDataUrl(imageUrl, { label = 'image' } = {}) {
     buffer = shrunk
   }
 
-  const { apiBase } = securityConfig()
   const mime = parsed.type === 'png' ? 'image/png' : 'image/jpeg'
+  return imgSecCheckBuffer(buffer, label, mime)
+}
 
+// ---------- 视频：服务端 ffmpeg 抽帧 + imgSecCheck ----------
+// 注意：微信 mediaCheckAsync 只支持图片/音频，不支持视频（media_type 只有 1/2），
+// 因此视频采用"抽帧后逐帧 imgSecCheck"的官方社区方案。
+
+export function checkVideoScanTooling() {
+  return new Promise((resolve) => {
+    execFile(process.env.FFPROBE_PATH || 'ffprobe', ['-version'], { timeout: 5000 }, (error) => resolve(!error))
+  })
+}
+
+// 快速重封装：不重新编码（-c copy），把 moov 移到文件头（+faststart），
+// 让播放器能秒开、边下边播。几乎零 CPU、画质零损失。成功返回 true。
+export function faststartVideo(filePath) {
+  return new Promise((resolve) => {
+    const outPath = `${filePath}.faststart`
+    execFile(
+      process.env.FFMPEG_PATH || 'ffmpeg',
+      ['-i', filePath, '-c', 'copy', '-movflags', '+faststart', '-y', outPath],
+      { timeout: 180000 },
+      (error) => {
+        if (error) {
+          try { fs.unlinkSync(outPath) } catch {}
+          resolve(false)
+          return
+        }
+        try {
+          fs.renameSync(outPath, filePath)
+          resolve(true)
+        } catch {
+          try { fs.unlinkSync(outPath) } catch {}
+          resolve(false)
+        }
+      }
+    )
+  })
+}
+
+function probeVideoDuration(filePath) {
+  return new Promise((resolve) => {
+    execFile(
+      process.env.FFPROBE_PATH || 'ffprobe',
+      ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', filePath],
+      { timeout: 20000 },
+      (error, stdout) => {
+        if (error) {
+          resolve(NaN)
+          return
+        }
+        try {
+          resolve(Number(JSON.parse(stdout).format.duration))
+        } catch {
+          resolve(NaN)
+        }
+      }
+    )
+  })
+}
+
+function extractFrame(filePath, atSeconds, outputPath) {
+  return new Promise((resolve) => {
+    execFile(
+      process.env.FFMPEG_PATH || 'ffmpeg',
+      ['-ss', String(atSeconds), '-i', filePath, '-frames:v', '1', '-q:v', '3', '-y', outputPath],
+      { timeout: 60000 },
+      (error) => resolve(!error)
+    )
+  })
+}
+
+// 对单帧/单图执行 imgSecCheck（供图片 data URL 与视频帧共用）
+async function imgSecCheckBuffer(buffer, label, mime = 'image/jpeg') {
+  const { apiBase } = securityConfig()
   try {
     const data = await callWithToken(async (token) => {
       const form = new FormData()
-      form.append('media', new Blob([buffer], { type: mime }), `check.${parsed.type}`)
+      form.append('media', new Blob([buffer], { type: mime }), 'check.jpg')
       const response = await fetch(
         `${apiBase}/wxa/img_sec_check?access_token=${encodeURIComponent(token)}`,
         { method: 'POST', body: form, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }
@@ -211,34 +288,54 @@ export async function checkImageDataUrl(imageUrl, { label = 'image' } = {}) {
   }
 }
 
-// ---------- 视频：mediaCheckAsync（异步，结果走消息推送回调） ----------
-
-export async function submitMediaCheck({ mediaUrl, openid, traceId }) {
+// 视频抽帧检测：按时长取 5~12 帧，任一帧违规即拒绝；
+// 服务器未装 ffmpeg/ffprobe 时跳过检测（放行并告警）。
+export async function checkVideoFrames(filePath) {
   if (!isContentSecurityConfigured()) {
-    console.warn('[content-security] 未配置 WECHAT_APPID/WECHAT_SECRET，视频跳过检测直接放行')
-    return { skipped: true }
-  }
-  if (!openid) {
-    console.warn('[content-security] 用户没有绑定的真实 openid，视频跳过检测直接放行')
+    console.warn('[content-security] 未配置 WECHAT_APPID/WECHAT_SECRET，跳过视频帧检测')
     return { skipped: true }
   }
 
-  const { apiBase } = securityConfig()
-  const payload = { media_url: mediaUrl, media_type: 3, version: 2, scene: 4, openid, trace_id: traceId }
+  const duration = await probeVideoDuration(filePath)
+  if (!Number.isFinite(duration) || duration <= 0) {
+    console.warn('[content-security] ffprobe 不可用或视频读取失败，跳过视频帧检测（请安装 ffmpeg：sudo apt install -y ffmpeg）')
+    return { skipped: true }
+  }
 
+  const frameCount = Math.min(12, Math.max(5, Math.ceil(duration / 30)))
+  const stamps = []
+  for (let i = 1; i <= frameCount; i += 1) {
+    stamps.push(Number(((duration * i) / (frameCount + 1)).toFixed(2)))
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-scan-'))
   try {
-    const data = await callWithToken(async (token) =>
-      fetchWechatJson(`${apiBase}/wxa/media_check_async?access_token=${encodeURIComponent(token)}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
-    )
-    console.log(`[content-security] mediaCheckAsync（trace_id=${traceId}）返回：${JSON.stringify(data)}`)
-    if (data.errcode === 0) return { ok: true }
-    return { ok: false, errcode: data.errcode, errmsg: data.errmsg }
-  } catch (error) {
-    return { ok: false, errcode: 'network', errmsg: error.message }
+    let checked = 0
+    for (let i = 0; i < stamps.length; i += 1) {
+      const framePath = path.join(tmpDir, `frame-${i}.jpg`)
+      const extracted = await extractFrame(filePath, stamps[i], framePath)
+      if (!extracted || !fs.existsSync(framePath)) continue
+
+      let buffer = fs.readFileSync(framePath)
+      if (buffer.length > MAX_IMAGE_BYTES) {
+        const shrunk = await shrinkToCheckable(buffer)
+        if (!shrunk) continue
+        buffer = shrunk
+      }
+
+      const verdict = await imgSecCheckBuffer(buffer, `视频帧${i + 1}/${stamps.length}`)
+      if (!verdict.ok) return { ok: false }
+      checked += 1
+    }
+
+    if (checked === 0) {
+      console.warn('[content-security] 一帧都没能抽取成功，跳过视频帧检测')
+      return { skipped: true }
+    }
+    console.log(`[content-security] 视频帧检测完成：${checked}/${stamps.length} 帧全部通过`)
+    return { ok: true }
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch {}
   }
 }
 

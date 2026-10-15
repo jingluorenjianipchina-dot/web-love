@@ -46,13 +46,15 @@ import {
 import {
   checkImageDataUrl,
   checkText,
+  checkVideoFrames,
+  checkVideoScanTooling,
   codeToSession,
   decryptPushMessage,
+  faststartVideo,
   isContentSecurityConfigured,
-  submitMediaCheck,
   verifyPushSignature
 } from './wechat-security.mjs'
-import { setupWatchServer } from './watch-server.mjs'
+import { getActiveWatchRoomIds, setupWatchServer } from './watch-server.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.join(__dirname, '..')
@@ -63,8 +65,10 @@ const port = Number(process.env.PORT || 3001)
 app.use(cors())
 app.use(express.json({ limit: '10mb' }))
 
-const publicBaseUrl = (process.env.PUBLIC_BASE_URL || 'https://lxl-qwx.xyz').replace(/\/$/, '')
-const MAX_VIDEO_BYTES = Number(process.env.MAX_VIDEO_BYTES) || 1024 * 1024 * 1024
+const MAX_VIDEO_BYTES = Number(process.env.MAX_VIDEO_BYTES) || 2 * 1024 * 1024 * 1024
+const CHUNK_SIZE = 10 * 1024 * 1024 // 分片上传：单片 10MB
+const DIRECT_UPLOAD_LIMIT = 1024 * 1024 * 1024 // 整传上限 1GB（multer 兜底），更大的走分片
+const tmpChunkDir = path.join(uploadsDir, '..', 'tmp')
 
 const VIDEO_EXTENSIONS = ['.mp4', '.m4v', '.mov']
 const videoUpload = multer({
@@ -78,7 +82,7 @@ const videoUpload = multer({
       cb(null, `video_${Date.now()}_${Math.random().toString(16).slice(2)}${ext}`)
     }
   }),
-  limits: { fileSize: MAX_VIDEO_BYTES },
+  limits: { fileSize: DIRECT_UPLOAD_LIMIT },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname || '').toLowerCase()
     if (!VIDEO_EXTENSIONS.includes(ext)) {
@@ -87,6 +91,28 @@ const videoUpload = multer({
     }
     cb(null, true)
   }
+})
+
+// 分片接收：单片限制给足余量（业务单片 10MB，接收上限 25MB）。
+// uploadId/index 走 URL query（multer 按 multipart 顺序解析，body 字段可能晚于 file 到达）
+const chunkUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, _file, cb) => {
+      const uploadId = String(req.query.uploadId || '')
+      if (!/^[A-Za-z0-9_-]+$/.test(uploadId)) {
+        cb(new Error('uploadId 不合法'))
+        return
+      }
+      const dir = path.join(tmpChunkDir, uploadId)
+      fs.mkdirSync(dir, { recursive: true })
+      cb(null, dir)
+    },
+    filename: (req, _file, cb) => {
+      const index = Number(req.query.index)
+      cb(null, `part-${Number.isInteger(index) && index >= 0 ? index : 'bad'}`)
+    }
+  }),
+  limits: { fileSize: CHUNK_SIZE * 2.5 }
 })
 
 // 视频门禁：rejected 一律 404；ready 正常播放；checking 期间需放行给微信检测爬虫
@@ -126,6 +152,35 @@ async function guardText(res, text, { openid = '', scene = 2, label = 'text' } =
     return false
   }
   return true
+}
+
+// 公共收尾：faststart 秒开 → 入库 ready → ffmpeg 抽帧检测（不通过则 rejected 并删文件）
+async function finalizeVideoFile({ filePath, filename, sizeBytes, title, openid }) {
+  await faststartVideo(filePath)
+
+  const videoId = `video_${Date.now()}_${Math.random().toString(16).slice(2)}`
+  addVideoRecord({
+    id: videoId,
+    title,
+    filename,
+    sizeBytes,
+    openid,
+    status: 'ready'
+  })
+
+  if (isContentSecurityConfigured()) {
+    const verdict = await checkVideoFrames(filePath)
+    if (!verdict.ok && !verdict.skipped) {
+      setVideoStatus(videoId, 'rejected')
+      try { fs.unlinkSync(filePath) } catch {}
+      console.warn(`[content-security] 视频帧检测未通过，已拒绝：${videoId}`)
+    }
+  }
+  return { videoId }
+}
+
+function cleanupChunkDir(uploadId) {
+  try { fs.rmSync(path.join(tmpChunkDir, uploadId), { recursive: true, force: true }) } catch {}
 }
 
 async function guardImage(res, imageUrl, { label = 'image' } = {}) {
@@ -364,8 +419,9 @@ app.delete('/api/albums/:id', (req, res) => {
   res.json(deleteAlbum(req.params.id))
 })
 
-// ---------- 一起看：视频上传 / 房间 ----------
+// ---------- 一起看：视频上传 / 分片上传 / 房间 ----------
 
+// 整传（≤1GB，中小视频）：直接落盘，收尾走公共流程
 app.post('/api/videos', (req, res, next) => {
   videoUpload.single('file')(req, res, (error) => {
     if (!error) {
@@ -373,7 +429,7 @@ app.post('/api/videos', (req, res, next) => {
       return
     }
     if (error.code === 'LIMIT_FILE_SIZE') {
-      res.status(400).json({ message: '视频超过 1GB 限制' })
+      res.status(400).json({ message: '视频超过 1GB，请使用分片上传（自动）' })
       return
     }
     res.status(400).json({ message: error.message || '视频上传失败' })
@@ -400,38 +456,128 @@ app.post('/api/videos', (req, res, next) => {
     return
   }
 
-  const videoId = `video_${Date.now()}_${Math.random().toString(16).slice(2)}`
-  const checking = isContentSecurityConfigured()
-  addVideoRecord({
-    id: videoId,
-    title,
+  const { videoId } = await finalizeVideoFile({
+    filePath: file.path,
     filename: file.filename,
     sizeBytes: file.size,
-    openid,
-    status: checking ? 'checking' : 'ready'
+    title,
+    openid
   })
 
-  if (checking) {
-    const mediaUrl = `${publicBaseUrl}/api/uploads/videos/${file.filename}`
-    const result = await submitMediaCheck({
-      mediaUrl,
-      openid: getWxOpenid(openid),
-      traceId: videoId
-    })
-    if (result.skipped || !result.ok) {
-      if (!result.skipped) {
-        console.warn(`[content-security] mediaCheckAsync 提交失败（${result.errcode} ${result.errmsg}），兜底放行`)
-      }
-      setVideoStatus(videoId, 'ready')
-    }
-  }
-
-  console.log(`[watch] 视频上传成功 ${videoId}（${file.size} 字节）`)
+  console.log(`[watch] 视频上传成功 ${videoId}（${file.size} 字节，整传）`)
   res.json(getData())
 }))
 
 app.delete('/api/videos/:id', asyncRoute(async (req, res) => {
   res.json(deleteVideo(req.params.id))
+}))
+
+// 分片上传：接收单片（幂等——已存在的片直接跳过，天然支持断点续传）
+app.post('/api/videos/chunk', (req, res, next) => {
+  chunkUpload.single('file')(req, res, (error) => {
+    if (!error) {
+      next()
+      return
+    }
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      res.status(400).json({ message: '单片超过大小限制' })
+      return
+    }
+    res.status(400).json({ message: error.message || '分片接收失败' })
+  })
+}, (req, res) => {
+  const index = Number(req.query.index)
+  const total = Number(req.query.total)
+  if (!Number.isInteger(index) || index < 0 || !Number.isInteger(total) || total <= 0 || total > 9999) {
+    res.status(400).json({ message: '分片参数不正确' })
+    return
+  }
+  res.json({ ok: true, index, total })
+})
+
+// 分片上传：合并 + 公共收尾（faststart + 检测 + 入库）
+app.post('/api/videos/complete', asyncRoute(async (req, res) => {
+  const uploadId = String(req.body.uploadId || '').trim()
+  const total = Number(req.body.total)
+  const title = String(req.body.title || '').trim()
+  const openid = String(req.body.openid || '').trim()
+
+  const dir = path.join(tmpChunkDir, uploadId)
+  if (!uploadId || !/^[A-Za-z0-9_-]+$/.test(uploadId) || !fs.existsSync(dir)) {
+    res.status(400).json({ message: '上传会话不存在或已过期' })
+    return
+  }
+
+  const parts = []
+  for (let i = 0; i < total; i += 1) {
+    const partPath = path.join(dir, `part-${i}`)
+    if (!fs.existsSync(partPath)) {
+      cleanupChunkDir(uploadId)
+      res.status(400).json({ message: `分片不完整（缺少第 ${i + 1} 片）` })
+      return
+    }
+    parts.push(partPath)
+  }
+
+  const ext = path.extname(String(req.body.filename || '').split('?')[0]).toLowerCase() || '.mp4'
+  if (!VIDEO_EXTENSIONS.includes(ext)) {
+    cleanupChunkDir(uploadId)
+    res.status(400).json({ message: '仅支持 MP4 / M4V / MOV 格式的视频' })
+    return
+  }
+
+  if (!(await guardText(res, title, { openid, label: '视频标题' }))) {
+    cleanupChunkDir(uploadId)
+    return
+  }
+  if (!findUserByOpenid(openid)) {
+    cleanupChunkDir(uploadId)
+    res.status(400).json({ message: '身份不存在' })
+    return
+  }
+
+  // 顺序合并分片为完整文件
+  const mergedPath = path.join(dir, 'merged.mp4')
+  try {
+    const sink = fs.createWriteStream(mergedPath)
+    for (const partPath of parts) {
+      await new Promise((resolve, reject) => {
+        const source = fs.createReadStream(partPath)
+        source.pipe(sink, { end: false })
+        source.on('end', resolve)
+        source.on('error', reject)
+      })
+    }
+    await new Promise((resolve, reject) => sink.end(() => resolve()))
+  } catch (error) {
+    cleanupChunkDir(uploadId)
+    res.status(400).json({ message: '合并失败，请重试' })
+    return
+  }
+
+  const size = fs.statSync(mergedPath).size
+  if (size > MAX_VIDEO_BYTES) {
+    cleanupChunkDir(uploadId)
+    res.status(400).json({ message: '视频超过大小限制' })
+    return
+  }
+
+  const filename = `video_${Date.now()}_${Math.random().toString(16).slice(2)}${ext}`
+  const finalPath = path.join(videoDir, filename)
+  fs.mkdirSync(videoDir, { recursive: true })
+  fs.renameSync(mergedPath, finalPath)
+  cleanupChunkDir(uploadId)
+
+  const { videoId } = await finalizeVideoFile({
+    filePath: finalPath,
+    filename,
+    sizeBytes: size,
+    title,
+    openid
+  })
+
+  console.log(`[watch] 视频上传成功 ${videoId}（${size} 字节，分片 ${total} 片）`)
+  res.json(getData())
 }))
 
 app.post('/api/rooms', asyncRoute(async (req, res) => {
@@ -538,8 +684,14 @@ setupWatchServer(server)
 
 await initDb()
 console.log(`[content-security] ${isContentSecurityConfigured() ? '内容安全检测已启用' : '内容安全检测未启用（未配置 WECHAT_APPID/WECHAT_SECRET，UGC 会直接放行）'}`)
+if (isContentSecurityConfigured()) {
+  const hasFfmpeg = await checkVideoScanTooling()
+  console.log(hasFfmpeg
+    ? '[watch] ffmpeg 可用，上传视频将抽帧检测'
+    : '[watch] 未检测到 ffmpeg，视频帧检测将跳过（服务器安装：sudo apt install -y ffmpeg）')
+}
 try {
-  const removed = purgeWatchData()
+  const removed = purgeWatchData(getActiveWatchRoomIds())
   if (removed.videos || removed.rooms) {
     console.log(`[watch] 启动清理：删除视频 ${removed.videos} 个、过期房间 ${removed.rooms} 个`)
   }
@@ -548,7 +700,21 @@ try {
 }
 setInterval(() => {
   try {
-    purgeWatchData()
+    purgeWatchData(getActiveWatchRoomIds())
+    // 清理超过 1 小时未完成的分片临时目录
+    try {
+      if (fs.existsSync(tmpChunkDir)) {
+        const cutoff = Date.now() - 60 * 60 * 1000
+        fs.readdirSync(tmpChunkDir).forEach((name) => {
+          const dir = path.join(tmpChunkDir, name)
+          try {
+            if (fs.statSync(dir).mtimeMs < cutoff) fs.rmSync(dir, { recursive: true, force: true })
+          } catch {}
+        })
+      }
+    } catch (error) {
+      console.warn(`[watch] 分片临时目录清理失败：${error.message}`)
+    }
   } catch (error) {
     console.warn(`[watch] 定时清理失败：${error.message}`)
   }

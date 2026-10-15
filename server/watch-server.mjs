@@ -24,6 +24,15 @@ function safeSend(ws, payload) {
   }
 }
 
+// 当前有 WebSocket 连接的房间 id（供清理任务跳过正在使用的房间）
+export function getActiveWatchRoomIds() {
+  const ids = []
+  rooms.forEach((state, roomId) => {
+    if (state.conns.size > 0) ids.push(roomId)
+  })
+  return ids
+}
+
 export function setupWatchServer(httpServer) {
   const wss = new WebSocketServer({ server: httpServer, path: '/ws/watch' })
   // roomId → { videoId, conns: Map<openid, Set<ws>>, state: {playing, position, updatedAt}, finishTimer }

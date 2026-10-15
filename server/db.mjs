@@ -742,13 +742,26 @@ export function deleteRoomMessages(roomId) {
   run('DELETE FROM room_messages WHERE room_id = ?', [roomId])
 }
 
-// 定期清理：已看完 72 小时删视频，房间+聊天保留 7 天，检测卡住超 24h 的视频放行兜底
-export function purgeWatchData() {
+// 定期清理：已看完 72 小时删视频，房间+聊天保留 7 天；
+// 创建后 30 分钟无人使用的房间自动作废（防止废弃房间一直占位）；
+// 检测卡住超 24h 的视频放行兜底。
+export function purgeWatchData(activeRoomIds = []) {
   const nowMs = Date.now()
   const VIDEO_TTL_MS = 72 * 60 * 60 * 1000
   const ROOM_TTL_MS = 7 * 24 * 60 * 60 * 1000
   const CHECK_STUCK_MS = 24 * 60 * 60 * 1000
+  const STALE_ROOM_MS = 30 * 60 * 1000
   const removed = { videos: 0, rooms: 0 }
+  const activeSet = new Set(activeRoomIds)
+
+  rows(`SELECT * FROM rooms WHERE status IN ('waiting', 'active')`).forEach((room) => {
+    if (activeSet.has(room.id)) return
+    const updatedAt = Date.parse(room.updated_at)
+    if (!Number.isNaN(updatedAt) && nowMs - updatedAt >= STALE_ROOM_MS) {
+      setRoomStatus(room.id, 'finished')
+      removed.rooms += 1
+    }
+  })
 
   rows(`SELECT * FROM rooms WHERE status = 'finished' AND finished_at IS NOT NULL`).forEach((room) => {
     const finishedMs = Date.parse(room.finished_at)
